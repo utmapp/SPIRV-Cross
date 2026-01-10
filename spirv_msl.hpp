@@ -42,8 +42,15 @@ enum MSLShaderVariableFormat
 	MSL_SHADER_VARIABLE_FORMAT_OTHER = 0,
 	MSL_SHADER_VARIABLE_FORMAT_UINT8 = 1,
 	MSL_SHADER_VARIABLE_FORMAT_UINT16 = 2,
-	MSL_SHADER_VARIABLE_FORMAT_ANY16 = 3,
-	MSL_SHADER_VARIABLE_FORMAT_ANY32 = 4,
+	MSL_SHADER_VARIABLE_FORMAT_UINT32 = 3,
+	MSL_SHADER_VARIABLE_FORMAT_FLOAT = 4,
+	MSL_SHADER_VARIABLE_FORMAT_INT8 = 5,
+	MSL_SHADER_VARIABLE_FORMAT_INT16 = 6,
+	MSL_SHADER_VARIABLE_FORMAT_INT32 = 7,
+	MSL_SHADER_VARIABLE_FORMAT_HALF = 8,
+
+	MSL_SHADER_VARIABLE_FORMAT_ANY16 = 9,
+	MSL_SHADER_VARIABLE_FORMAT_ANY32 = 10,
 
 	// Deprecated aliases.
 	MSL_VERTEX_FORMAT_OTHER = MSL_SHADER_VARIABLE_FORMAT_OTHER,
@@ -81,6 +88,10 @@ struct MSLShaderInterfaceVariable
 	spv::BuiltIn builtin = spv::BuiltInMax;
 	uint32_t vecsize = 0;
 	MSLShaderVariableRate rate = MSL_SHADER_VARIABLE_RATE_PER_VERTEX;
+	uint32_t offset = 0;
+	uint32_t stride = 0;
+	uint32_t binding = 0;
+	bool normalized = false;
 };
 
 // Matches the binding index of a MSL resource for a binding within a descriptor set.
@@ -319,6 +330,8 @@ public:
 		uint32_t shader_input_buffer_index = 22;
 		uint32_t shader_index_buffer_index = 21;
 		uint32_t shader_patch_input_buffer_index = 20;
+		uint32_t draw_info_index = 20;
+		uint32_t xfb_buffer_index = 19;
 		uint32_t shader_input_wg_index = 0;
 		uint32_t device_index = 0;
 		uint32_t enable_frag_output_mask = 0xffffffff;
@@ -496,6 +509,21 @@ public:
 		// so it can be enabled only when the bug is present.
 		bool sample_dref_lod_array_as_grad = false;
 
+		// MSL doesn't guarantee coherence between writes and subsequent reads of read_write textures.
+		// This inserts fences before each read of a read_write texture to ensure coherency.
+		// If you're sure you never rely on this, you can set this to false for a possible performance improvement.
+		// Note: Only Apple's GPU compiler takes advantage of the lack of coherency, so make sure to test on Apple GPUs if you disable this.
+		bool readwrite_texture_fences = true;
+
+		// Compile for use with a geometry shader. If set, vertex shaders will be compiled as [[object]]
+		// functions, and geometry shaders as [[mesh]].
+		bool for_mesh_pipeline = false;
+
+		enum class PrimitiveTopology
+		{
+			Triangles, TriangleStrip, Lines, LineStrip, Points
+		} input_primitive_type;
+
 		bool is_ios() const
 		{
 			return platform == iOS;
@@ -571,6 +599,12 @@ public:
 	{
 		return msl_options.multiview && !msl_options.view_index_from_device_index;
 	}
+
+	bool needs_xfb_buffer() const
+	{
+		return xfb_buffer_id != 0;
+	}
+
 
 	// Provide feedback to calling API to allow it to pass a buffer
 	// containing the dispatch base workgroup ID.
@@ -796,6 +830,8 @@ protected:
 		SPVFuncImplConvertYCbCrBT2020,
 		SPVFuncImplDynamicImageSampler,
 		SPVFuncImplRayQueryIntersectionParams,
+		SPVFuncImplEmitVertex,
+		SPVFuncImplWriteXfb,
 	};
 
 	// If the underlying resource has been used for comparison then duplicate loads of that resource must be too
@@ -890,7 +926,7 @@ protected:
 	void extract_global_variables_from_function(uint32_t func_id, std::set<uint32_t> &added_arg_ids,
 	                                            std::unordered_set<uint32_t> &global_var_ids,
 	                                            std::unordered_set<uint32_t> &processed_func_ids);
-	uint32_t add_interface_block(spv::StorageClass storage, bool patch = false);
+	uint32_t add_interface_block(spv::StorageClass storage, bool patch = false, bool mesh_primitive = false);
 	uint32_t add_interface_block_pointer(uint32_t ib_var_id, spv::StorageClass storage);
 
 	struct InterfaceBlockMeta
@@ -952,6 +988,7 @@ protected:
 	void emit_interface_block(uint32_t ib_var_id);
 	bool maybe_emit_array_assignment(uint32_t id_lhs, uint32_t id_rhs);
 	uint32_t get_resource_array_size(uint32_t id) const;
+	void emit_mesh_wrapper();
 
 	void fix_up_shader_inputs_outputs();
 
@@ -961,6 +998,19 @@ protected:
 	std::string entry_point_arg_stage_in();
 	void entry_point_args_builtin(std::string &args);
 	void entry_point_args_discrete_descriptors(std::string &args);
+
+	struct Entry_Point_Resource
+	{
+		SPIRVariable *var;
+		SPIRVariable *descriptor_alias;
+		std::string name;
+		SPIRType::BaseType basetype;
+		uint32_t index;
+		uint32_t plane;
+		uint32_t secondary_index;
+	};
+
+	SmallVector<Entry_Point_Resource> get_sorted_entry_point_args(bool add_name = true);
 	std::string append_member_name(const std::string &qualifier, const SPIRType &type, uint32_t index);
 	std::string ensure_valid_name(std::string name, std::string pfx);
 	std::string to_sampler_expression(uint32_t id);
@@ -1026,6 +1076,8 @@ protected:
 	std::string get_tess_factor_struct_name();
 	SPIRType &get_uint_type();
 	uint32_t get_uint_type_id();
+	SPIRType &get_ubyte_type();
+	uint32_t get_ubyte_type_id();
 	void emit_atomic_func_op(uint32_t result_type, uint32_t result_id, const char *op, spv::Op opcode,
 	                         uint32_t mem_order_1, uint32_t mem_order_2, bool has_mem_order_2, uint32_t op0, uint32_t op1 = 0,
 	                         bool op1_is_pointer = false, bool op1_is_literal = false, uint32_t op2 = 0);
@@ -1062,7 +1114,9 @@ protected:
 	uint32_t buffer_size_buffer_id = 0;
 	uint32_t view_mask_buffer_id = 0;
 	uint32_t dynamic_offsets_buffer_id = 0;
+	uint32_t xfb_buffer_id = 0;
 	uint32_t uint_type_id = 0;
+	uint32_t ubyte_type_id = 0;
 	uint32_t argument_buffer_padding_buffer_type_id = 0;
 	uint32_t argument_buffer_padding_image_type_id = 0;
 	uint32_t argument_buffer_padding_sampler_type_id = 0;
@@ -1089,6 +1143,7 @@ protected:
 	void ensure_builtin(spv::StorageClass storage, spv::BuiltIn builtin);
 
 	void mark_implicit_builtin(spv::StorageClass storage, spv::BuiltIn builtin, uint32_t id);
+	int get_primitive_vertex_count();
 
 	std::string convert_to_f32(const std::string &expr, uint32_t components);
 
@@ -1128,6 +1183,7 @@ protected:
 	VariableID tess_level_inner_var_id = 0;
 	VariableID tess_level_outer_var_id = 0;
 	VariableID stage_out_masked_builtin_type_id = 0;
+	VariableID stage_out_mesh_primitive_var_id = 0;
 
 	// Handle HLSL-style 0-based vertex/instance index.
 	enum class TriState
@@ -1157,6 +1213,7 @@ protected:
 	std::string qual_pos_var_name;
 	std::string stage_in_var_name = "in";
 	std::string stage_out_var_name = "out";
+	std::string stage_out_mesh_primitive_var_name = "out_1";
 	std::string patch_stage_in_var_name = "patchIn";
 	std::string patch_stage_out_var_name = "patchOut";
 	std::string sampler_name_suffix = "Smplr";

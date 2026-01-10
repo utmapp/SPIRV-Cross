@@ -539,6 +539,11 @@ public:
 		return position_invariant;
 	}
 
+	bool can_compile_with_fast_math() const
+	{
+		return !needs_fast_math_off;
+	}
+
 protected:
 	const uint32_t *stream(const Instruction &instr) const
 	{
@@ -922,6 +927,7 @@ protected:
 	uint32_t clip_distance_count = 0;
 	uint32_t cull_distance_count = 0;
 	bool position_invariant = false;
+	bool needs_fast_math_off = false;
 
 	void analyze_parameter_preservation(
 	    SPIRFunction &entry, const CFG &cfg,
