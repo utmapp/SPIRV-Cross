@@ -676,6 +676,7 @@ struct CLIArguments
 	bool msl_manual_helper_invocation_updates = true;
 	bool msl_check_discarded_frag_stores = false;
 	bool msl_sample_dref_lod_array_as_grad = false;
+	bool msl_replace_recursive_inputs = false;
 	const char *msl_combined_sampler_suffix = nullptr;
 	bool glsl_emit_push_constant_as_ubo = false;
 	bool glsl_emit_ubo_as_plain_uniforms = false;
@@ -1230,6 +1231,7 @@ static string compile_iteration(const CLIArguments &args, std::vector<uint32_t> 
 		msl_opts.check_discarded_frag_stores = args.msl_check_discarded_frag_stores;
 		msl_opts.sample_dref_lod_array_as_grad = args.msl_sample_dref_lod_array_as_grad;
 		msl_opts.ios_support_base_vertex_instance = true;
+		msl_opts.replace_recursive_inputs = args.msl_replace_recursive_inputs;
 		msl_comp->set_msl_options(msl_opts);
 		for (auto &v : args.msl_discrete_descriptor_sets)
 			msl_comp->add_discrete_descriptor_set(v);
@@ -1781,6 +1783,8 @@ static int main_inner(int argc, char *argv[])
 	cbs.add("--msl-combined-sampler-suffix", [&args](CLIParser &parser) {
 		args.msl_combined_sampler_suffix = parser.next_string();
 	});
+	cbs.add("--msl-replace-recursive-inputs",
+	        [&args](CLIParser &) { args.msl_replace_recursive_inputs = true; });
 	cbs.add("--extension", [&args](CLIParser &parser) { args.extensions.push_back(parser.next_string()); });
 	cbs.add("--rename-entry-point", [&args](CLIParser &parser) {
 		auto old_name = parser.next_string();

@@ -13845,15 +13845,17 @@ void CompilerMSL::entry_point_args_discrete_descriptors(string &ep_args)
 			{
 				if (!ep_args.empty())
 					ep_args += ", ";
-				ep_args +=
-				    get_argument_address_space(var) + " " + type_to_glsl(type) + "& " + to_restrict(var_id, true) + r.name;
-				if (!msl_options.for_mesh_pipeline)
-				{
-					ep_args += " [[buffer(" + convert_to_string(r.index) + ")";
-					if (interlocked_resources.count(var_id))
-						ep_args += ", raster_order_group(0)";
-					ep_args += "]]";
-				}
+				ep_args += get_argument_address_space(var) + " ";
+
+				if (recursive_inputs.count(type.self))
+					ep_args += string("void* ") + to_restrict(var_id, true) + r.name + "_vp";
+				else
+					ep_args += type_to_glsl(type) + "& " + to_restrict(var_id, true) + r.name;
+
+				ep_args += " [[buffer(" + convert_to_string(r.index) + ")";
+				if (interlocked_resources.count(var_id))
+					ep_args += ", raster_order_group(0)";
+				ep_args += "]]";
 			}
 			break;
 		}
@@ -14020,6 +14022,19 @@ void CompilerMSL::fix_up_shader_inputs_outputs()
 					}
 				});
 			}
+		}
+
+		if (msl_options.replace_recursive_inputs && type_contains_recursion(type) &&
+		    (var.storage == StorageClassUniform || var.storage == StorageClassUniformConstant ||
+		     var.storage == StorageClassPushConstant || var.storage == StorageClassStorageBuffer))
+		{
+			recursive_inputs.insert(type.self);
+			entry_func.fixup_hooks_in.push_back([this, &type, &var, var_id]() {
+				auto addr_space = get_argument_address_space(var);
+				auto var_name = to_name(var_id);
+				statement(addr_space, " auto& ", to_restrict(var_id, true), var_name,
+				          " = *(", addr_space, " ", type_to_glsl(type), "*)", var_name, "_vp;");
+			});
 		}
 	});
 

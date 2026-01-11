@@ -519,6 +519,13 @@ public:
 		// functions, and geometry shaders as [[mesh]].
 		bool for_mesh_pipeline = false;
 
+		// Metal 3.1 introduced a Metal regression bug which causes infinite recursion during 
+		// Metal's analysis of an entry point input structure that is itself recursive. Enabling
+		// this option will replace the recursive input declaration with a alternate variable of
+		// type void*, and then cast to the correct type at the top of the entry point function.
+		// The bug has been reported to Apple, and will hopefully be fixed in future releases.
+		bool replace_recursive_inputs = false;
+
 		enum class PrimitiveTopology
 		{
 			Triangles, TriangleStrip, Lines, LineStrip, Points
@@ -1240,6 +1247,7 @@ protected:
 	SmallVector<uint32_t> buffer_aliases_discrete;
 	std::unordered_set<uint32_t> atomic_image_vars; // Emulate texture2D atomic operations
 	std::unordered_set<uint32_t> pull_model_inputs;
+	std::unordered_set<uint32_t> recursive_inputs;
 
 	// Must be ordered since array is in a specific order.
 	std::map<SetBindingPair, std::pair<uint32_t, uint32_t>> buffers_requiring_dynamic_offset;
