@@ -1437,6 +1437,25 @@ uint32_t CompilerMSL::get_uint_type_id()
 	return uint_type_id;
 }
 
+SPIRType &CompilerMSL::get_ubyte_type()
+{
+	return get<SPIRType>(get_ubyte_type_id());
+}
+
+uint32_t CompilerMSL::get_ubyte_type_id()
+{
+	if (ubyte_type_id != 0)
+		return ubyte_type_id;
+
+	ubyte_type_id = ir.increase_bound_by(1);
+
+	SPIRType type { OpTypeInt };
+	type.basetype = SPIRType::UByte;
+	type.width = 8;
+	set<SPIRType>(ubyte_type_id, type);
+	return ubyte_type_id;
+}
+
 void CompilerMSL::emit_entry_point_declarations()
 {
 	// FIXME: Get test coverage here ...

@@ -1202,6 +1202,8 @@ protected:
 	std::string get_tess_factor_struct_name();
 	SPIRType &get_uint_type();
 	uint32_t get_uint_type_id();
+	SPIRType &get_ubyte_type();
+	uint32_t get_ubyte_type_id();
 	void emit_atomic_func_op(uint32_t result_type, uint32_t result_id, const char *op, Op opcode,
 	                         uint32_t mem_order_1, uint32_t mem_order_2, bool has_mem_order_2, uint32_t op0, uint32_t op1 = 0,
 	                         bool op1_is_pointer = false, bool op1_is_literal = false, uint32_t op2 = 0);
@@ -1245,6 +1247,7 @@ protected:
 	uint32_t uint_type_id = 0;
 	uint32_t shared_uint_type_id = 0;
 	uint32_t meshlet_type_id = 0;
+	uint32_t ubyte_type_id = 0;
 	uint32_t argument_buffer_padding_buffer_type_id = 0;
 	uint32_t argument_buffer_padding_image_type_id = 0;
 	uint32_t argument_buffer_padding_sampler_type_id = 0;
