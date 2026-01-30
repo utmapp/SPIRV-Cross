@@ -5519,6 +5519,11 @@ uint32_t CompilerMSL::ensure_correct_input_type(uint32_t type_id, uint32_t locat
 		return type_id;
 
 	auto p_va = inputs_by_location.find({location, component});
+
+	// Hack for bug 23102
+	if (p_va == end(inputs_by_location))
+		p_va = inputs_by_location.find({location, 0});
+
 	if (p_va == end(inputs_by_location))
 	{
 		if (num_components > type.vecsize)
@@ -15241,10 +15246,22 @@ string CompilerMSL::member_location_attribute_qualifier(const SPIRType &type, ui
 	{
 		quals += "user(locn";
 		quals += convert_to_string(locn);
+
 		if (comp != k_unknown_component && comp != 0)
 		{
-			quals += "_";
-			quals += convert_to_string(comp);
+			// Hack for bug 23102 / 23157
+			bool active_input  = type.storage == StorageClassInput  && ( inputs_by_location.empty() ||  inputs_by_location.find({locn, comp}) != end( inputs_by_location));
+			bool active_output = type.storage == StorageClassOutput && (outputs_by_location.empty() || outputs_by_location.find({locn, comp}) != end(outputs_by_location));
+
+			if (active_input || active_output)
+			{
+				quals += "_";
+				quals += convert_to_string(comp);
+			}
+			else
+			{
+				return quals + "/* HACK _" + convert_to_string(comp) + "*/)";
+			}
 		}
 		quals += ")";
 	}
@@ -15370,7 +15387,7 @@ bool CompilerMSL::entry_point_returns_stage_output() const
 {
 	if (get_execution_model() == ExecutionModelVertex && msl_options.vertex_for_tessellation)
 		return false;
-	bool ep_should_return_output = !get_is_rasterization_disabled();
+	bool ep_should_return_output = !get_is_rasterization_disabled() || msl_options.for_mesh_pipeline;
 	return stage_out_var_id && ep_should_return_output;
 }
 
@@ -18334,7 +18351,9 @@ bool CompilerMSL::variable_decl_is_remapped_storage(const SPIRVariable &variable
 
 		return (variable.storage == StorageClassOutput || variable.storage == StorageClassInput) &&
 		       !variable_storage_requires_stage_io(variable.storage) &&
-		       (variable.storage != StorageClassOutput || !is_stage_output_variable_masked(variable));
+		       (variable.storage != StorageClassOutput || !is_stage_output_variable_masked(variable)) &&
+		       (get_execution_model() != ExecutionModelGeometry); // Geometry input/output variables are stored on stack, prevent code from thinking they're device memory.
+		                                                          // This is a bit of a hack, and there's probably a more correct thing to do here. For bug 23102.
 	}
 	else
 	{
@@ -18449,8 +18468,10 @@ string CompilerMSL::image_type_glsl(const SPIRType &type, uint32_t id, bool memb
 
 	string img_type_name;
 
-	auto &img_type = type.image;
+	bool do_the_hack = false;
 
+	// Bypass pointers because we need the real image struct
+	auto &img_type = get<SPIRType>(type.self).image;
 	if (is_depth_image(type, id))
 	{
 		switch (img_type.dim)
@@ -18504,6 +18525,7 @@ string CompilerMSL::image_type_glsl(const SPIRType &type, uint32_t id, bool memb
 				if (!msl_options.supports_msl_version(2, 1))
 					SPIRV_CROSS_THROW("Native texture_buffer type is only supported in MSL 2.1.");
 				img_type_name = "texture_buffer";
+				do_the_hack = needs_xfb_buffer();
 			}
 			else
 				img_type_name += "texture2d";
@@ -18559,7 +18581,12 @@ string CompilerMSL::image_type_glsl(const SPIRType &type, uint32_t id, bool memb
 
 	// Append the pixel type
 	img_type_name += "<";
-	img_type_name += type_to_glsl(get<SPIRType>(img_type.type));
+	if (do_the_hack) {
+		fprintf(stderr, "SPIRV-Cross: applying texture_buffer<float> hack, original pixel type was %s!\n", type_to_glsl(get<SPIRType>(img_type.type)).c_str());
+		img_type_name += "float";
+	} else {
+		img_type_name += type_to_glsl(get<SPIRType>(img_type.type));
+	}
 
 	// For unsampled images, append the sample/read/write access qualifier.
 	// For kernel images, the access qualifier my be supplied directly by SPIR-V.
