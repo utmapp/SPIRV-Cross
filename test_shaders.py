@@ -116,6 +116,19 @@ def print_msl_compiler_version():
     except subprocess.CalledProcessError:
         pass
 
+def msl_compiler_supports_version(version):
+    try:
+        subprocess.check_call(['xcrun', '--sdk', 'macosx', 'metal', '-x', 'metal', version, '-'],
+            stdin = subprocess.DEVNULL, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+        print('Current SDK supports MSL {0}. Enabling validation for MSL {0} shaders.'.format(version))
+        return True
+    except OSError as e:
+        print('Failed to check if MSL {} is not supported. It probably is not.'.format(version))
+        return False
+    except subprocess.CalledProcessError:
+        print('Current SDK does NOT support MSL {0}. Disabling validation for MSL {0} shaders.'.format(version))
+        return False
+
 def path_to_msl_standard(shader):
     if '.msl4.' in shader:
         return '-std=metal4.0'
@@ -921,7 +934,7 @@ def test_shader_msl(stats, shader, args, paths):
     # used as input to an invocation of spirv-cross to debug from Xcode directly.
     # To do so, build spriv-cross using `make DEBUG=1`, then run the spriv-cross
     # executable from Xcode using args: `--msl --entry main --output msl_path spirv_path`.
-#    print('SPRIV shader: ' + spirv)
+    print('SPRIV shader: ' + spirv)
 
     skip_validation = '.invalid.' in joined_path
     if (not args.force_no_external_validation) and (not skip_validation):
@@ -1070,8 +1083,18 @@ def main():
         sys.stderr.write('Parallel execution is disabled when using the flags --update, --malisc or --force-no-external-validation\n')
         args.parallel = False
 
+    args.msl22 = False
+    args.msl23 = False
+    args.msl24 = False
+    args.msl30 = False
+    args.msl31 = False
     if args.msl:
         print_msl_compiler_version()
+        args.msl22 = msl_compiler_supports_version('-std=macos-metal2.2')
+        args.msl23 = msl_compiler_supports_version('-std=macos-metal2.3')
+        args.msl24 = msl_compiler_supports_version('-std=macos-metal2.4')
+        args.msl30 = msl_compiler_supports_version('-std=metal3.0')
+        args.msl31 = msl_compiler_supports_version('-std=metal3.1')
 
     backend = 'glsl'
     if (args.msl or args.metal):
