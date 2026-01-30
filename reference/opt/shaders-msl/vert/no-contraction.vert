@@ -6,13 +6,13 @@
 using namespace metal;
 
 template<typename T>
-[[clang::optnone]] T spvFMul(T l, T r)
+inline T spvFMul(T l, T r)
 {
     return fma(l, r, T(0));
 }
 
 template<typename T, int Cols, int Rows>
-[[clang::optnone]] vec<T, Cols> spvFMulVectorMatrix(vec<T, Rows> v, matrix<T, Cols, Rows> m)
+inline vec<T, Cols> spvFMulVectorMatrix(vec<T, Rows> v, matrix<T, Cols, Rows> m)
 {
     vec<T, Cols> res = vec<T, Cols>(0);
     for (uint i = Rows; i > 0; --i)
@@ -28,7 +28,7 @@ template<typename T, int Cols, int Rows>
 }
 
 template<typename T, int Cols, int Rows>
-[[clang::optnone]] vec<T, Rows> spvFMulMatrixVector(matrix<T, Cols, Rows> m, vec<T, Cols> v)
+inline vec<T, Rows> spvFMulMatrixVector(matrix<T, Cols, Rows> m, vec<T, Cols> v)
 {
     vec<T, Rows> res = vec<T, Rows>(0);
     for (uint i = Cols; i > 0; --i)
@@ -39,7 +39,7 @@ template<typename T, int Cols, int Rows>
 }
 
 template<typename T, int LCols, int LRows, int RCols, int RRows>
-[[clang::optnone]] matrix<T, RCols, LRows> spvFMulMatrixMatrix(matrix<T, LCols, LRows> l, matrix<T, RCols, RRows> r)
+inline matrix<T, RCols, LRows> spvFMulMatrixMatrix(matrix<T, LCols, LRows> l, matrix<T, RCols, RRows> r)
 {
     matrix<T, RCols, LRows> res;
     for (uint i = 0; i < RCols; i++)
@@ -55,13 +55,13 @@ template<typename T, int LCols, int LRows, int RCols, int RRows>
 }
 
 template<typename T>
-[[clang::optnone]] T spvFAdd(T l, T r)
+inline T spvFAdd(T l, T r)
 {
     return fma(T(1), l, r);
 }
 
 template<typename T>
-[[clang::optnone]] T spvFSub(T l, T r)
+inline T spvFSub(T l, T r)
 {
     return fma(T(-1), r, l);
 }

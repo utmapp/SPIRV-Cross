@@ -9,7 +9,7 @@ template <typename F> struct SpvHalfTypeSelector;
 template <> struct SpvHalfTypeSelector<float> { public: using H = half; };
 template<uint N> struct SpvHalfTypeSelector<vec<float, N>> { using H = vec<half, N>; };
 template<typename F, typename H = typename SpvHalfTypeSelector<F>::H>
-[[clang::optnone]] F spvQuantizeToF16(F fval)
+inline F spvQuantizeToF16(F fval)
 {
     H hval = H(fval);
     hval = select(copysign(H(0), hval), hval, isnormal(hval) || isinf(hval) || isnan(hval));

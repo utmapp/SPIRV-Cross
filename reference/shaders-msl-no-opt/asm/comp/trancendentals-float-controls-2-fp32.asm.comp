@@ -6,7 +6,7 @@
 using namespace metal;
 
 template<typename T>
-[[clang::optnone]] T spvFAdd(T l, T r)
+inline T spvFAdd(T l, T r)
 {
     return fma(T(1), l, r);
 }
