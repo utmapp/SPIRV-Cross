@@ -579,7 +579,7 @@ public:
 
 		enum class PrimitiveTopology
 		{
-			Triangles, TriangleStrip, Points
+			Triangles, TriangleStrip, Lines, LineStrip, Points
 		} input_primitive_type;
 
 		bool is_ios() const

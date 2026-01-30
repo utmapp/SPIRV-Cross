@@ -1815,6 +1815,10 @@ static int vertex_count_in_primitive(CompilerMSL::Options::PrimitiveTopology top
 		return 3;
 	else if (top == CompilerMSL::Options::PrimitiveTopology::Triangles)
 		return 3;
+	else if (top == CompilerMSL::Options::PrimitiveTopology::LineStrip)
+		return 2;
+	else if (top == CompilerMSL::Options::PrimitiveTopology::Lines)
+		return 2;
 	else if (top == CompilerMSL::Options::PrimitiveTopology::Points)
 		return 1;
 
@@ -1949,6 +1953,16 @@ void CompilerMSL::emit_mesh_wrapper()
 		{
 			statement("int startingIndex = positionInGrid.x * 3;");
 			statement("int vertexCount = 3;");
+		}
+		else if (msl_options.input_primitive_type == Options::PrimitiveTopology::Lines)
+		{
+			statement("int startingIndex = positionInGrid.x * 2;");
+			statement("int vertexCount = 2;");
+		}
+		else if (msl_options.input_primitive_type == Options::PrimitiveTopology::LineStrip)
+		{
+			statement("int startingIndex = positionInGrid.x;");
+			statement("int vertexCount = 2;");
 		}
 		else if (msl_options.input_primitive_type == Options::PrimitiveTopology::Points)
 		{
