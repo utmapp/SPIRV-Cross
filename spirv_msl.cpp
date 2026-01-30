@@ -6906,8 +6906,9 @@ void CompilerMSL::emit_custom_functions()
 
 		// "fadd" intrinsic support
 		case SPVFuncImplFAdd:
+			needs_fast_math_off = true;
 			statement("template<typename T>");
-			statement("[[clang::optnone]] T spvFAdd(T l, T r)");
+			statement("inline T spvFAdd(T l, T r)");
 			begin_scope();
 			statement("return fma(T(1), l, r);");
 			end_scope();
@@ -6916,8 +6917,9 @@ void CompilerMSL::emit_custom_functions()
 
 		// "fsub" intrinsic support
 		case SPVFuncImplFSub:
+			needs_fast_math_off = true;
 			statement("template<typename T>");
-			statement("[[clang::optnone]] T spvFSub(T l, T r)");
+			statement("inline T spvFSub(T l, T r)");
 			begin_scope();
 			statement("return fma(T(-1), r, l);");
 			end_scope();
@@ -6926,15 +6928,16 @@ void CompilerMSL::emit_custom_functions()
 
 		// "fmul' intrinsic support
 		case SPVFuncImplFMul:
+			needs_fast_math_off = true;
 			statement("template<typename T>");
-			statement("[[clang::optnone]] T spvFMul(T l, T r)");
+			statement("inline T spvFMul(T l, T r)");
 			begin_scope();
 			statement("return fma(l, r, T(0));");
 			end_scope();
 			statement("");
 
 			statement("template<typename T, int Cols, int Rows>");
-			statement("[[clang::optnone]] vec<T, Cols> spvFMulVectorMatrix(vec<T, Rows> v, matrix<T, Cols, Rows> m)");
+			statement("inline vec<T, Cols> spvFMulVectorMatrix(vec<T, Rows> v, matrix<T, Cols, Rows> m)");
 			begin_scope();
 			statement("vec<T, Cols> res = vec<T, Cols>(0);");
 			statement("for (uint i = Rows; i > 0; --i)");
@@ -6951,7 +6954,7 @@ void CompilerMSL::emit_custom_functions()
 			statement("");
 
 			statement("template<typename T, int Cols, int Rows>");
-			statement("[[clang::optnone]] vec<T, Rows> spvFMulMatrixVector(matrix<T, Cols, Rows> m, vec<T, Cols> v)");
+			statement("inline vec<T, Rows> spvFMulMatrixVector(matrix<T, Cols, Rows> m, vec<T, Cols> v)");
 			begin_scope();
 			statement("vec<T, Rows> res = vec<T, Rows>(0);");
 			statement("for (uint i = Cols; i > 0; --i)");
@@ -6963,7 +6966,7 @@ void CompilerMSL::emit_custom_functions()
 			statement("");
 
 			statement("template<typename T, int LCols, int LRows, int RCols, int RRows>");
-			statement("[[clang::optnone]] matrix<T, RCols, LRows> spvFMulMatrixMatrix(matrix<T, LCols, LRows> l, matrix<T, RCols, RRows> r)");
+			statement("inline matrix<T, RCols, LRows> spvFMulMatrixMatrix(matrix<T, LCols, LRows> l, matrix<T, RCols, RRows> r)");
 			begin_scope();
 			statement("matrix<T, RCols, LRows> res;");
 			statement("for (uint i = 0; i < RCols; i++)");
@@ -6981,6 +6984,7 @@ void CompilerMSL::emit_custom_functions()
 			break;
 
 		case SPVFuncImplQuantizeToF16:
+			needs_fast_math_off = true;
 			// Ensure fast-math is disabled to match Vulkan results.
 			// SpvHalfTypeSelector is used to match the half* template type to the float* template type.
 			// Depending on GPU, MSL does not always flush converted subnormal halfs to zero,
@@ -6989,7 +6993,7 @@ void CompilerMSL::emit_custom_functions()
 			statement("template <> struct SpvHalfTypeSelector<float> { public: using H = half; };");
 			statement("template<uint N> struct SpvHalfTypeSelector<vec<float, N>> { using H = vec<half, N>; };");
 			statement("template<typename F, typename H = typename SpvHalfTypeSelector<F>::H>");
-			statement("[[clang::optnone]] F spvQuantizeToF16(F fval)");
+			statement("inline F spvQuantizeToF16(F fval)");
 			begin_scope();
 			statement("H hval = H(fval);");
 			statement("hval = select(copysign(H(0), hval), hval, isnormal(hval) || isinf(hval) || isnan(hval));");
@@ -7926,10 +7930,11 @@ void CompilerMSL::emit_custom_functions()
 			break;
 
 		case SPVFuncImplReflectScalar:
+			needs_fast_math_off = true;
 			// Metal does not support scalar versions of these functions.
 			// Ensure fast-math is disabled to match Vulkan results.
 			statement("template<typename T>");
-			statement("[[clang::optnone]] T spvReflect(T i, T n)");
+			statement("inline T spvReflect(T i, T n)");
 			begin_scope();
 			statement("return i - T(2) * i * n * n;");
 			end_scope();
