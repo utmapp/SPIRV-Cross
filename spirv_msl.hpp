@@ -333,6 +333,7 @@ public:
 		uint32_t shader_index_buffer_index = 21;
 		uint32_t shader_patch_input_buffer_index = 20;
 		uint32_t draw_info_index = 20;
+		uint32_t xfb_buffer_index = 19;
 		uint32_t shader_input_wg_index = 0;
 		uint32_t device_index = 0;
 		uint32_t enable_frag_output_mask = 0xffffffff;
@@ -662,6 +663,12 @@ public:
 		return msl_options.multiview && !msl_options.view_index_from_device_index;
 	}
 
+	bool needs_xfb_buffer() const
+	{
+		return xfb_buffer_id != 0;
+	}
+
+
 	// Provide feedback to calling API to allow it to pass a buffer
 	// containing the dispatch base workgroup ID.
 	bool needs_dispatch_base_buffer() const
@@ -930,6 +937,7 @@ protected:
 		SPVFuncImplSetMeshOutputsEXT,
 		SPVFuncImplAssume,
 		SPVFuncImplEmitVertex,
+		SPVFuncImplWriteXfb,
 	};
 
 	// If the underlying resource has been used for comparison then duplicate loads of that resource must be too
@@ -1244,6 +1252,7 @@ protected:
 	uint32_t buffer_size_buffer_id = 0;
 	uint32_t view_mask_buffer_id = 0;
 	uint32_t dynamic_offsets_buffer_id = 0;
+	uint32_t xfb_buffer_id = 0;
 	uint32_t uint_type_id = 0;
 	uint32_t shared_uint_type_id = 0;
 	uint32_t meshlet_type_id = 0;

@@ -327,8 +327,9 @@ bool CompilerMSL::builtin_translates_to_nonarray(BuiltIn builtin) const
 
 void CompilerMSL::build_implicit_builtins()
 {
+	bool need_xfb = get_execution_mode_bitset().get(ExecutionModeXfb);
 	bool need_sample_pos = active_input_builtins.get(BuiltInSamplePosition);
-	bool need_vertex_params = capture_output_to_buffer && get_execution_model() == ExecutionModelVertex &&
+	bool need_vertex_params = (need_xfb || capture_output_to_buffer) && get_execution_model() == ExecutionModelVertex &&
 	                          !msl_options.vertex_for_tessellation;
 	bool need_tesc_params = is_tesc_shader();
 	bool need_tese_params = is_tese_shader() && msl_options.raw_buffer_tese_input;
@@ -1285,6 +1286,38 @@ void CompilerMSL::build_implicit_builtins()
 		set<SPIRVariable>(var_id, type_ptr_id, StorageClassOutput);
 		set_name(var_id, "spvMgp");
 		builtin_task_grid_id = var_id;
+	}
+
+	if (need_xfb)
+	{
+		uint32_t offset = ir.increase_bound_by(3);
+		uint32_t type_ptr_id = offset;
+		uint32_t type_ptr_ptr_id = offset + 1;
+		uint32_t var_id = offset + 2;
+
+		SPIRType ubyte_type_pointer = get_ubyte_type();
+		ubyte_type_pointer.pointer = true;
+		ubyte_type_pointer.pointer_depth++;
+		ubyte_type_pointer.parent_type = get_ubyte_type_id();
+		ubyte_type_pointer.storage = StorageClassStorageBuffer;
+		set<SPIRType>(type_ptr_id, ubyte_type_pointer);
+		set_decoration(type_ptr_id, DecorationArrayStride, 1);
+
+		SPIRType ubyte_type_pointer2 = ubyte_type_pointer;
+		ubyte_type_pointer2.pointer_depth++;
+		ubyte_type_pointer2.parent_type = type_ptr_id;
+		set<SPIRType>(type_ptr_ptr_id, ubyte_type_pointer2);
+
+		set<SPIRVariable>(var_id, type_ptr_ptr_id, StorageClassStorageBuffer);
+
+		set_name(var_id, "spvXfbBuffer");
+		// This should never match anything.
+		set_decoration(var_id, DecorationDescriptorSet, ~(6u));
+		set_decoration(var_id, DecorationBinding, msl_options.xfb_buffer_index);
+		set_extended_decoration(var_id, SPIRVCrossDecorationResourceIndexPrimary,
+		                       msl_options.xfb_buffer_index);
+		xfb_buffer_id = var_id;
+		printf("xfb_buffer_id = %u\n", var_id);
 	}
 }
 
@@ -2282,6 +2315,8 @@ string CompilerMSL::compile()
 		add_active_interface_variable(builtin_sample_mask_id);
 	if (builtin_frag_depth_id)
 		add_active_interface_variable(builtin_frag_depth_id);
+	if (xfb_buffer_id)
+		add_active_interface_variable(xfb_buffer_id);
 
 	// Create structs to hold input, output and uniform variables.
 	// Do output first to ensure out. is declared at top of entry function.
@@ -6599,6 +6634,17 @@ void CompilerMSL::emit_custom_templates()
 			statement("typedef spvStorageMatrix<float, 4, 3> spvStorage_float4x3;");
 			statement("typedef spvStorageMatrix<float, 4, 4> spvStorage_float4x4;");
 			statement("");
+			break;
+
+		case SPVFuncImplWriteXfb:
+			statement("template<metal::primitive_type Prim, typename Type>");
+			statement("void spvWriteTranformFeedback(device uchar *xfbBuffer, uint32_t vertexIndex, Type value, uint32_t offset, uint32_t stride)");
+			begin_scope();
+			statement("if (Prim == metal::primitive_type::point || Prim == metal::primitive_type::line || Prim == metal::primitive_type::triangle)");
+			begin_scope();
+			statement("*(device Type *)(xfbBuffer + offset + stride * vertexIndex) = value;");
+			end_scope();
+			end_scope();
 			break;
 
 		case SPVFuncImplEmitVertex:
@@ -17043,6 +17089,23 @@ void CompilerMSL::fix_up_shader_inputs_outputs()
 			default:
 				break;
 			}
+		}
+		else if (var.storage == StorageClassOutput && has_decoration(var_id, DecorationXfbBuffer))
+		{
+			entry_func.fixup_hooks_out.push_back([=]() {
+				SPIRType type = get<SPIRType>(var.basetype);
+				type.pointer = false; // Hack, I'm not sure why it's a pointer, but that's not what I want!
+				string cast;
+				if (type.basetype != SPIRType::Boolean && (is_vector(type) || is_matrix(type))) {
+					cast = "(packed_" + type_to_glsl(type, 0) + ")";
+				}
+				if (get_execution_model() == ExecutionModelGeometry)
+					statement("int gl_VertexIndex = 0; // HACK: not implemented for geometry shaders!");
+				statement("spvWriteTranformFeedback<metal::primitive_type::triangle>(" + to_name(xfb_buffer_id) + ", gl_VertexIndex, ", cast, to_expression(var_id), ", ",
+				std::to_string(get_decoration(var_id, DecorationOffset)),
+					", ", std::to_string(get_decoration(var_id, DecorationXfbStride)), ");");
+				add_spv_func_and_recompile(SPVFuncImplWriteXfb);
+			});
 		}
 	});
 }
