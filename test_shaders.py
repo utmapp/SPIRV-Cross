@@ -417,6 +417,10 @@ def cross_compile_msl(shader, spirv, opt, iterations, paths):
     if '.default-point-size.' in shader:
         msl_args.append('--msl-default-point-size')
         msl_args.append('1.0')
+    if '.robust-buffer-access2.' in shader:
+        msl_args.append('--msl-robust-buffer-access2')
+    if '.robust-image-access2.' in shader:
+        msl_args.append('--msl-robust-image-access2')
 
     subprocess.check_call(msl_args)
 

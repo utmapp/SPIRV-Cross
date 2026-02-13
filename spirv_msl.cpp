@@ -36,6 +36,69 @@ static const uint32_t k_unknown_location = ~0u;
 static const uint32_t k_unknown_component = ~0u;
 static const char *force_inline = "static inline __attribute__((always_inline))";
 
+// Returns the number of components for an image format.
+static uint32_t image_format_to_components(ImageFormat fmt)
+{
+	switch (fmt)
+	{
+	case ImageFormatR8:
+	case ImageFormatR16:
+	case ImageFormatR8Snorm:
+	case ImageFormatR16Snorm:
+	case ImageFormatR16f:
+	case ImageFormatR32f:
+	case ImageFormatR8i:
+	case ImageFormatR16i:
+	case ImageFormatR32i:
+	case ImageFormatR8ui:
+	case ImageFormatR16ui:
+	case ImageFormatR32ui:
+	case ImageFormatR64i:
+	case ImageFormatR64ui:
+		return 1;
+
+	case ImageFormatRg8:
+	case ImageFormatRg16:
+	case ImageFormatRg8Snorm:
+	case ImageFormatRg16Snorm:
+	case ImageFormatRg16f:
+	case ImageFormatRg32f:
+	case ImageFormatRg8i:
+	case ImageFormatRg16i:
+	case ImageFormatRg32i:
+	case ImageFormatRg8ui:
+	case ImageFormatRg16ui:
+	case ImageFormatRg32ui:
+		return 2;
+
+	case ImageFormatR11fG11fB10f:
+		return 3;
+
+	case ImageFormatRgba8:
+	case ImageFormatRgba16:
+	case ImageFormatRgb10A2:
+	case ImageFormatRgba8Snorm:
+	case ImageFormatRgba16Snorm:
+	case ImageFormatRgba16f:
+	case ImageFormatRgba32f:
+	case ImageFormatRgba8i:
+	case ImageFormatRgba16i:
+	case ImageFormatRgba32i:
+	case ImageFormatRgba8ui:
+	case ImageFormatRgba16ui:
+	case ImageFormatRgba32ui:
+	case ImageFormatRgb10a2ui:
+		return 4;
+
+	case ImageFormatUnknown:
+	default:
+		// For unknown format, assume fewer than 4 components (conservative for OOB substitution)
+		// This ensures OOB reads return (0,0,0,1) which is correct for 1-3 component formats.
+		// For 4-component formats, the shader type will be known and handled correctly.
+		return 0;
+	}
+}
+
 CompilerMSL::CompilerMSL(std::vector<uint32_t> spirv_)
     : CompilerGLSL(std::move(spirv_))
 {
@@ -124,7 +187,7 @@ void CompilerMSL::add_msl_resource_binding(const MSLResourceBinding &binding)
 void CompilerMSL::add_dynamic_buffer(uint32_t desc_set, uint32_t binding, uint32_t index)
 {
 	SetBindingPair pair = { desc_set, binding };
-	buffers_requiring_dynamic_offset[pair] = { index, 0, "" };
+	buffers_requiring_dynamic_offset[pair] = { index, 0, "", {} };
 }
 
 void CompilerMSL::add_inline_uniform_block(uint32_t desc_set, uint32_t binding)
@@ -1541,6 +1604,24 @@ void CompilerMSL::emit_entry_point_declarations()
 			          get_variable_address_space(var), " ", type_to_glsl(type), "* ", to_restrict(var_id, false), ")((",
 			          get_variable_address_space(var), " char* ", to_restrict(var_id, false), ")", to_name(arg_id), ".",
 			          dynamic_buffer.second.mbr_name, " + ", to_name(dynamic_offsets_buffer_id), "[", base_index, "]);");
+		}
+
+		// Emit aliased variables for this dynamic buffer binding.
+		// These variables share the same underlying buffer but have different types.
+		for (uint32_t aliased_var_id : dynamic_buffer.second.aliased_vars)
+		{
+			const auto &aliased_var = get<SPIRVariable>(aliased_var_id);
+			const auto &aliased_type = get_variable_data_type(aliased_var);
+			auto aliased_addr_space = get_variable_address_space(aliased_var);
+
+			add_local_variable_name(aliased_var_id);
+			string aliased_name = to_name(aliased_var_id);
+
+			// Cast from the base variable's address to the aliased variable's type.
+			// The base variable already has the dynamic offset applied.
+			statement(aliased_addr_space, " auto& ", to_restrict(aliased_var_id, true), aliased_name, " = *(",
+			          aliased_addr_space, " ", type_to_glsl(aliased_type), "* ", to_restrict(aliased_var_id, false),
+			          ")(&", name, ");");
 		}
 	}
 
@@ -9282,6 +9363,60 @@ bool CompilerMSL::access_chain_needs_stage_io_builtin_translation(uint32_t base)
 	return redirect_builtin;
 }
 
+void CompilerMSL::access_chain_internal_append_index(std::string &expr, uint32_t base, const SPIRType *type,
+                                                     AccessChainFlags flags, bool &access_chain_is_arrayed,
+                                                     uint32_t index)
+{
+	bool index_is_literal = (flags & ACCESS_CHAIN_INDEX_IS_LITERAL_BIT) != 0;
+	bool register_expression_read = (flags & ACCESS_CHAIN_SKIP_REGISTER_EXPRESSION_READ_BIT) == 0;
+
+	// Check if we need robust buffer access bounds checking
+	// Apply to arrays in buffers that we've tracked during preprocessing
+	if (msl_options.robust_buffer_access2 && type)
+	{
+		auto *var = maybe_get_backing_variable(base);
+		if (var && buffers_requiring_robust_access.count(var->self))
+		{
+			// Only apply to runtime-sized array accesses with runtime indices
+			// Fixed-size arrays have compile-time known bounds and don't need runtime checking
+			// unless the index is dynamic.
+			bool is_runtime_array = is_runtime_size_array(*type);
+			bool is_fixed_array = is_array(*type) && !is_runtime_array;
+
+			if (is_runtime_array || (is_fixed_array && !index_is_literal))
+			{
+				string count_expr = get_robust_buffer_array_length(*type, var->self);
+				string idx_expr = to_unpacked_expression(index, register_expression_read);
+
+				// Create clamped index: min(idx, max(count - 1, 0))
+				// For empty buffers (count=0), max ensures we get 0
+				string clamped_idx = join("min(uint(", idx_expr, "), uint(max(int(", count_expr, ") - 1, 0)))");
+
+				// Emit the clamped index
+				expr += "[";
+				expr += clamped_idx;
+				expr += "]";
+
+				// Accumulate info for robust zero-select at OpLoad.
+				// We need to check if ANY index in the chain was OOB.
+				string check = join("uint(", idx_expr, ") < ", count_expr);
+				if (pending_robust_access_info.valid)
+					pending_robust_access_info.bounds_check_condition += " && " + check;
+				else
+				{
+					pending_robust_access_info.bounds_check_condition = check;
+					pending_robust_access_info.valid = true;
+				}
+
+				return;
+			}
+		}
+	}
+
+	// Fall back to base class implementation
+	CompilerGLSL::access_chain_internal_append_index(expr, base, type, flags, access_chain_is_arrayed, index);
+}
+
 // Sets the interface member index for an access chain to a pull-model interpolant.
 void CompilerMSL::fix_up_interpolant_access_chain(const uint32_t *ops, uint32_t length)
 {
@@ -9388,6 +9523,7 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 	{
 	case OpLoad:
 	{
+		uint32_t result_type = ops[0];
 		uint32_t id = ops[1];
 		uint32_t ptr = ops[2];
 		if (is_tessellation_shader())
@@ -9401,6 +9537,27 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 			if (BuiltIn(get_decoration(ptr, DecorationBuiltIn)) == BuiltInSampleMask)
 				set_decoration(id, DecorationBuiltIn, BuiltInSampleMask);
 			CompilerGLSL::emit_instruction(instruction);
+		}
+
+		// Check if this load needs robust zero-select wrapping
+		auto it = robust_access_chains.find(ptr);
+		if (it != robust_access_chains.end())
+		{
+			auto &info = it->second;
+			// Get the expression that was just emitted
+			auto *expr = maybe_get<SPIRExpression>(id);
+			if (expr)
+			{
+				auto &loaded_type = get<SPIRType>(result_type);
+				// Generate a proper zero expression using type constructor
+				// to_zero_initialized_expression returns {} which doesn't work in ternary
+				string zero_expr = join(type_to_glsl(loaded_type), "(0)");
+
+				// Wrap the expression with a select: (in_bounds) ? loaded_value : zero
+				expr->expression = join("(", info.bounds_check_condition, " ? ", expr->expression, " : ", zero_expr, ")");
+			}
+			// Remove from map to avoid double-processing
+			robust_access_chains.erase(it);
 		}
 		break;
 	}
@@ -9611,7 +9768,29 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		uint32_t ptr = ops[2];
 		uint32_t mem_sem = ops[4];
 		uint32_t val = ops[5];
+		// Check if this atomic needs robust bounds checking (OOB writes should be discarded)
+		bool robust_atomic = false;
+		auto robust_it = robust_access_chains.find(ptr);
+		if (robust_it != robust_access_chains.end())
+		{
+			robust_atomic = true;
+			auto &info = robust_it->second;
+			emit_uninitialized_temporary_expression(result_type, id);
+			pending_robust_buffer_atomic_result_id = id;
+			statement("if (", info.bounds_check_condition, ")");
+			begin_scope();
+			robust_access_chains.erase(robust_it);
+		}
 		emit_atomic_func_op(result_type, id, "atomic_exchange", opcode, mem_sem, mem_sem, false, ptr, val);
+		pending_robust_buffer_atomic_result_id = 0;
+		if (robust_atomic)
+		{
+			end_scope();
+			statement("else");
+			begin_scope();
+			statement(to_expression(id), " = {};");
+			end_scope();
+		}
 		break;
 	}
 
@@ -9624,9 +9803,31 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		uint32_t mem_sem_fail = ops[5];
 		uint32_t val = ops[6];
 		uint32_t comp = ops[7];
+		// Check if this atomic needs robust bounds checking (OOB writes should be discarded)
+		bool robust_atomic = false;
+		auto robust_it = robust_access_chains.find(ptr);
+		if (robust_it != robust_access_chains.end())
+		{
+			robust_atomic = true;
+			auto &info = robust_it->second;
+			emit_uninitialized_temporary_expression(result_type, id);
+			pending_robust_buffer_atomic_result_id = id;
+			statement("if (", info.bounds_check_condition, ")");
+			begin_scope();
+			robust_access_chains.erase(robust_it);
+		}
 		emit_atomic_func_op(result_type, id, "atomic_compare_exchange_weak", opcode,
 		                    mem_sem_pass, mem_sem_fail, true,
 		                    ptr, comp, true, false, val);
+		pending_robust_buffer_atomic_result_id = 0;
+		if (robust_atomic)
+		{
+			end_scope();
+			statement("else");
+			begin_scope();
+			statement(to_expression(id), " = {};");
+			end_scope();
+		}
 		break;
 	}
 
@@ -9640,7 +9841,29 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		uint32_t ptr = ops[2];
 		uint32_t mem_sem = ops[4];
 		check_atomic_image(ptr);
+		// Check if this atomic needs robust bounds checking (OOB writes should be discarded)
+		bool robust_atomic = false;
+		auto robust_it = robust_access_chains.find(ptr);
+		if (robust_it != robust_access_chains.end())
+		{
+			robust_atomic = true;
+			auto &info = robust_it->second;
+			emit_uninitialized_temporary_expression(result_type, id);
+			pending_robust_buffer_atomic_result_id = id;
+			statement("if (", info.bounds_check_condition, ")");
+			begin_scope();
+			robust_access_chains.erase(robust_it);
+		}
 		emit_atomic_func_op(result_type, id, "atomic_load", opcode, mem_sem, mem_sem, false, ptr, 0);
+		pending_robust_buffer_atomic_result_id = 0;
+		if (robust_atomic)
+		{
+			end_scope();
+			statement("else");
+			begin_scope();
+			statement(to_expression(id), " = {};");
+			end_scope();
+		}
 		break;
 	}
 
@@ -9652,7 +9875,20 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		uint32_t mem_sem = ops[2];
 		uint32_t val = ops[3];
 		check_atomic_image(ptr);
+		// Check if this atomic needs robust bounds checking (OOB writes should be discarded)
+		bool robust_atomic = false;
+		auto robust_it = robust_access_chains.find(ptr);
+		if (robust_it != robust_access_chains.end())
+		{
+			robust_atomic = true;
+			auto &info = robust_it->second;
+			statement("if (", info.bounds_check_condition, ")");
+			begin_scope();
+			robust_access_chains.erase(robust_it);
+		}
 		emit_atomic_func_op(result_type, id, "atomic_store", opcode, mem_sem, mem_sem, false, ptr, val);
+		if (robust_atomic)
+			end_scope();
 		break;
 	}
 
@@ -9664,9 +9900,33 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		uint32_t ptr = ops[2];                                                                                   \
 		uint32_t mem_sem = ops[4];                                                                               \
 		uint32_t val = valsrc;                                                                                   \
+		/* Check if this atomic needs robust bounds checking (OOB writes should be discarded) */                 \
+		bool robust_atomic = false;                                                                              \
+		auto robust_it = robust_access_chains.find(ptr);                                                         \
+		if (robust_it != robust_access_chains.end())                                                             \
+		{                                                                                                        \
+			robust_atomic = true;                                                                                \
+			auto &info = robust_it->second;                                                                      \
+			/* Declare variable before if block */                                                               \
+			emit_uninitialized_temporary_expression(result_type, id);                                            \
+			pending_robust_buffer_atomic_result_id = id;                                                         \
+			/* Emit bounds check: only perform atomic if index < count */                                        \
+			statement("if (", info.bounds_check_condition, ")");                                                 \
+			begin_scope();                                                                                       \
+			robust_access_chains.erase(robust_it);                                                               \
+		}                                                                                                        \
 		emit_atomic_func_op(result_type, id, "atomic_fetch_" #op, opcode,                                        \
 		                    mem_sem, mem_sem, false, ptr, val,                                                   \
 		                    false, valconst);                                                                    \
+		pending_robust_buffer_atomic_result_id = 0;                                                              \
+		if (robust_atomic)                                                                                       \
+		{                                                                                                        \
+			end_scope();                                                                                         \
+			statement("else");                                                                                   \
+			begin_scope();                                                                                       \
+			statement(to_expression(id), " = {};");                                                              \
+			end_scope();                                                                                         \
+		}                                                                                                        \
 	} while (false)
 
 #define MSL_AFMO(op) MSL_AFMO_IMPL(op, ops[5], false)
@@ -9780,6 +10040,16 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 			e.loaded_from = var ? var->self : ID(0);
 			inherit_expression_dependencies(id, ops[3]);
 		}
+
+		// For robustImageAccess2, store image and coord IDs for bounds checking at atomic use
+		if (msl_options.robust_image_access2)
+		{
+			uint32_t id = ops[1];
+			RobustImageAtomicInfo info;
+			info.image_id = ops[2];
+			info.coord_id = ops[3];
+			robust_image_atomics[id] = info;
+		}
 		break;
 	}
 
@@ -9837,6 +10107,16 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		args.coord = coord_id;
 		args.lod = lod;
 
+		// For robustImageAccess2, wrap write in bounds check to discard OOB writes
+		if (msl_options.robust_image_access2)
+		{
+			string coord_expr = to_expression(coord_id);
+			string lod_expr = lod ? to_expression(lod) : "";
+			string bounds_check = get_robust_image_bounds_check(img_id, coord_expr, lod_expr);
+			statement("if (", bounds_check, ")");
+			begin_scope();
+		}
+
 		string expr;
 		if (needs_frag_discard_checks())
 			expr = join("(", builtin_to_glsl(BuiltInHelperInvocation, StorageClassInput), " ? ((void)0) : ");
@@ -9846,6 +10126,9 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		if (needs_frag_discard_checks())
 			expr += ")";
 		statement(expr, ";");
+
+		if (msl_options.robust_image_access2)
+			end_scope();
 
 		if (p_var && variable_storage_is_aliased(*p_var))
 			flush_all_aliased_variables();
@@ -9896,6 +10179,14 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		}
 
 		expr += ")";
+
+		// For robustImageAccess2 with nullDescriptor support,
+		// image size queries on null images must return zero.
+		if (msl_options.robust_image_access2)
+		{
+			string zero_expr = type_to_glsl(rslt_type) + "(0)";
+			expr = join("(is_null_texture(", img_exp, ") ? ", zero_expr, " : ", expr, ")");
+		}
 
 		emit_op(rslt_type_id, id, expr, should_forward(img_id));
 
@@ -9959,6 +10250,11 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		uint32_t img_id = ops[2];                                                           \
 		string img_exp = to_expression(img_id);                                             \
 		string expr = type_to_glsl(rslt_type) + "(" + img_exp + ".get_num_" #qrytype "())"; \
+		if (msl_options.robust_image_access2)                                               \
+		{                                                                                   \
+			string zero_expr = type_to_glsl(rslt_type) + "(0)";                             \
+			expr = join("(is_null_texture(", img_exp, ") ? ", zero_expr, " : ", expr, ")"); \
+		}                                                                                   \
 		emit_op(rslt_type_id, id, expr, should_forward(img_id));                            \
 	} while (false)
 
@@ -10011,6 +10307,10 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 	case OpInBoundsAccessChain:
 	case OpAccessChain:
 	case OpPtrAccessChain:
+	{
+		// Clear pending robust access info before processing
+		pending_robust_access_info.valid = false;
+
 		if (is_tessellation_shader())
 		{
 			if (!emit_tessellation_access_chain(ops, instruction.length))
@@ -10019,7 +10319,16 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		else
 			CompilerGLSL::emit_instruction(instruction);
 		fix_up_interpolant_access_chain(ops, instruction.length);
+
+		// If we have pending robust access info, associate it with the result ID
+		if (pending_robust_access_info.valid)
+		{
+			uint32_t result_id = ops[1];
+			robust_access_chains[result_id] = pending_robust_access_info;
+			pending_robust_access_info.valid = false;
+		}
 		break;
+	}
 
 	case OpStore:
 	{
@@ -10027,6 +10336,29 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 
 		if (is_out_of_bounds_tessellation_level(ops[0]))
 			break;
+
+		// Check if this store needs robust bounds checking (OOB writes should be discarded)
+		bool robust_store = false;
+		auto robust_it = robust_access_chains.find(ops[0]);
+		if (robust_it != robust_access_chains.end())
+		{
+			robust_store = true;
+			auto &info = robust_it->second;
+			// If we're in a continue block, this kludge will make the block too complex
+			// to emit normally.
+			assert(current_emitting_block);
+			auto cont_type = continue_block_type(*current_emitting_block);
+			if (cont_type != SPIRBlock::ContinueNone && cont_type != SPIRBlock::ComplexLoop)
+			{
+				current_emitting_block->complex_continue = true;
+				force_recompile();
+			}
+			// Emit bounds check: only store if index < count
+			statement("if (", info.bounds_check_condition, ")");
+			begin_scope();
+			// Remove from map to avoid double-processing
+			robust_access_chains.erase(robust_it);
+		}
 
 		if (needs_frag_discard_checks() &&
 		    (type.storage == StorageClassStorageBuffer || type.storage == StorageClassUniform))
@@ -10047,6 +10379,8 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 			CompilerGLSL::emit_instruction(instruction);
 		if (needs_frag_discard_checks() &&
 		    (type.storage == StorageClassStorageBuffer || type.storage == StorageClassUniform))
+			end_scope();
+		if (robust_store)
 			end_scope();
 		if (has_decoration(ops[0], DecorationBuiltIn) && get_decoration(ops[0], DecorationBuiltIn) == BuiltInPointSize)
 			writes_to_point_size = true;
@@ -10224,7 +10558,17 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		uint32_t offset = type_struct_member_offset(type, ops[3]);
 		uint32_t stride = type_struct_member_array_stride(type, ops[3]);
 
-		auto expr = join("(", to_buffer_size_expression(ops[2]), " - ", offset, ") / ", stride);
+		string size_expr = to_buffer_size_expression(ops[2]);
+		string expr;
+		if (msl_options.robust_buffer_access2 && offset != 0)
+		{
+			// Guard against underflow when buffer_size < offset (e.g., null descriptors)
+			expr = join("((", size_expr, " < ", offset, ") ? 0u : ((", size_expr, " - ", offset, ") / ", stride, "))");
+		}
+		else
+		{
+			expr = join("(", size_expr, " - ", offset, ") / ", stride);
+		}
 		emit_op(ops[0], ops[1], expr, true);
 		break;
 	}
@@ -10637,6 +10981,170 @@ void CompilerMSL::emit_texture_op(const Instruction &i, bool sparse)
 		}
 	}
 
+	// Handle robustImageAccess2 for image reads (OpImageRead, OpImageFetch)
+	auto op = static_cast<Op>(i.op);
+	if (msl_options.robust_image_access2 && (op == OpImageRead || op == OpImageFetch))
+	{
+		auto *ops = stream(i);
+		uint32_t result_type_id = ops[0];
+		uint32_t id = ops[1];
+		uint32_t img = ops[2];
+		uint32_t coord = ops[3];
+
+		auto &result_type = get<SPIRType>(result_type_id);
+		auto &type = expression_type(img);
+
+		// Skip subpass data - not applicable for robust access
+		if (type.image.dim == DimSubpassData)
+		{
+			CompilerGLSL::emit_texture_op(i, sparse);
+			return;
+		}
+
+		// Parse optional LOD parameter for bounds check
+		const uint32_t *opt = &ops[4];
+		uint32_t length = i.length - 4;
+		uint32_t lod = 0;
+		uint32_t flags = 0;
+
+		if (length)
+		{
+			flags = *opt++;
+			length--;
+		}
+
+		// Extract LOD if present
+		if (length && (flags & ImageOperandsBiasMask))
+		{
+			opt++;
+			length--;
+		}
+		if (length && (flags & ImageOperandsLodMask))
+		{
+			lod = *opt++;
+			length--;
+		}
+
+		// Generate the base texture read expression
+		SmallVector<uint32_t> inherited_expressions;
+		bool forward = false;
+		string expr = to_texture_op(i, sparse, &forward, inherited_expressions);
+
+		// Generate bounds check (without null check - we handle null separately)
+		string coord_expr = to_expression(coord);
+		string lod_expr = lod ? to_expression(lod) : "";
+		string bounds_check = get_robust_image_bounds_check(img, coord_expr, lod_expr, false);
+		string img_expr = to_expression(img);
+
+		// Generate zero value for OOB based on image format's component count
+		uint32_t format_components = image_format_to_components(type.image.format);
+
+		// If format is Unknown, try to get component count from resource binding
+		if (format_components == 0)
+		{
+			auto *var = maybe_get_backing_variable(img);
+			if (var)
+			{
+				uint32_t desc_set = get_decoration(var->self, DecorationDescriptorSet);
+				uint32_t binding = get_decoration(var->self, DecorationBinding);
+				StageSetBinding tuple = { get_entry_point().model, desc_set, binding };
+				auto itr = resource_bindings.find(tuple);
+				if (itr != resource_bindings.end())
+					format_components = itr->second.first.image_format_components;
+			}
+		}
+
+		// For OOB on valid textures: use format-based zero value (defaults to (0,0,0,1) when unknown)
+		string oob_zero = get_robust_image_zero_value(result_type, format_components);
+
+		// For null textures: always return pure zeros (0,0,0,0) per Vulkan spec for nullDescriptor
+		string type_name = type_to_glsl(result_type);
+		string null_zero;
+		if (result_type.vecsize == 4)
+			null_zero = type_name + "(0, 0, 0, 0)";
+		else if (result_type.vecsize == 3)
+			null_zero = type_name + "(0, 0, 0)";
+		else if (result_type.vecsize == 2)
+			null_zero = type_name + "(0, 0)";
+		else
+			null_zero = type_name + "(0)";
+
+		// Wrap: (!is_null_texture(img) ? (bounds_check ? read : oob_zero) : null_zero)
+		string wrapped_expr = join("(!is_null_texture(", img_expr, ") ? (", bounds_check, " ? ", expr, " : ", oob_zero, ") : ", null_zero, ")");
+
+		emit_op(result_type_id, id, wrapped_expr, false);
+		for (auto &inherit : inherited_expressions)
+			inherit_expression_dependencies(id, inherit);
+		return;
+	}
+
+	// Handle robustImageAccess2 for sampled images (OpImageSample*)
+	// For null descriptors, sampled image operations must return zero values.
+	// Unlike storage images, we only check for null texture (not bounds) since sampling uses normalized coords.
+	if (msl_options.robust_image_access2)
+	{
+		bool is_sample_op = false;
+		switch (op)
+		{
+		case OpImageSampleImplicitLod:
+		case OpImageSampleExplicitLod:
+		case OpImageSampleDrefImplicitLod:
+		case OpImageSampleDrefExplicitLod:
+		case OpImageSampleProjImplicitLod:
+		case OpImageSampleProjExplicitLod:
+		case OpImageSampleProjDrefImplicitLod:
+		case OpImageSampleProjDrefExplicitLod:
+			is_sample_op = true;
+			break;
+		default:
+			break;
+		}
+
+		if (is_sample_op)
+		{
+			auto *ops = stream(i);
+			uint32_t result_type_id = ops[0];
+			uint32_t id = ops[1];
+			uint32_t img = ops[2];
+
+			auto &result_type = get<SPIRType>(result_type_id);
+			// auto &type = expression_type(img);
+
+			// Get the actual texture from combined image sampler if needed
+			uint32_t tex_id = img;
+			auto *combined = maybe_get<SPIRCombinedImageSampler>(img);
+			if (combined)
+				tex_id = combined->image;
+
+			string img_expr = to_expression(tex_id);
+
+			// Generate the base sample expression
+			SmallVector<uint32_t> inherited_expressions;
+			bool forward = false;
+			string expr = to_texture_op(i, sparse, &forward, inherited_expressions);
+
+			// For null textures: always return pure zeros (0,0,0,0) per Vulkan spec for nullDescriptor
+			string type_name = type_to_glsl(result_type);
+			string null_zero;
+			if (result_type.vecsize == 4)
+				null_zero = type_name + "(0, 0, 0, 0)";
+			else if (result_type.vecsize == 3)
+				null_zero = type_name + "(0, 0, 0)";
+			else if (result_type.vecsize == 2)
+				null_zero = type_name + "(0, 0)";
+			else
+				null_zero = type_name + "(0)";
+
+			// Wrap: is_null_texture(tex) ? null_zero : sample_result
+			string wrapped_expr = join("(is_null_texture(", img_expr, ") ? ", null_zero, " : ", expr, ")");
+
+			emit_op(result_type_id, id, wrapped_expr, false);
+			for (auto &inherit : inherited_expressions)
+				inherit_expression_dependencies(id, inherit);
+			return;
+		}
+	}
+
 	// Fallback to default implementation
 	CompilerGLSL::emit_texture_op(i, sparse);
 }
@@ -11019,6 +11527,19 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 	bool check_discard = opcode != OpAtomicLoad && needs_frag_discard_checks() &&
 	                     ptr_type.storage != StorageClassWorkgroup;
 
+	// For robustImageAccess2, check if this is an image atomic and add bounds check
+	bool robust_image_atomic = false;
+	RobustImageAtomicInfo robust_info{};
+	if (msl_options.robust_image_access2 && ptr_type.storage == StorageClassImage)
+	{
+		auto it = robust_image_atomics.find(obj);
+		if (it != robust_image_atomics.end())
+		{
+			robust_image_atomic = true;
+			robust_info = it->second;
+		}
+	}
+
 	// Even compare exchange atomics are vec4 on metal for ... reasons :v
 	uint32_t vec4_temporary_id = 0;
 	if (use_native_image_atomic && is_atomic_compare_exchange_strong)
@@ -11049,6 +11570,25 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 		}
 		else
 			exp = join("(!", builtin_to_glsl(BuiltInHelperInvocation, StorageClassInput), " ? ");
+	}
+
+	// For robustImageAccess2, wrap image atomics in bounds check
+	// Atomics need block-based handling because they have both read and write semantics
+	if (robust_image_atomic)
+	{
+		// Generate bounds check expression
+		string coord_expr = to_expression(robust_info.coord_id);
+		string bounds_check = get_robust_image_bounds_check(robust_info.image_id, coord_expr, "");
+
+		if (strcmp(op, "atomic_store") != 0)
+		{
+			// For read-modify-write atomics, emit temporary and use if/else
+			emit_uninitialized_temporary_expression(result_type, result_id);
+			if (vec4_temporary_id)
+				emit_uninitialized_temporary_expression(vec4_temporary_id + 1, vec4_temporary_id);
+		}
+		statement("if (", bounds_check, ")");
+		begin_scope();
 	}
 
 	if (use_native_image_atomic)
@@ -11213,6 +11753,16 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 			statement(to_expression(result_id), " = {};");
 			end_scope();
 		}
+
+		// For robustImageAccess2, close bounds check scope and set OOB result to zero
+		if (robust_image_atomic)
+		{
+			end_scope();
+			statement("else");
+			begin_scope();
+			statement(to_expression(result_id), " = {};");
+			end_scope();
+		}
 	}
 	else
 	{
@@ -11258,9 +11808,29 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 			exp = bitcast_expression(type, expected_type, exp);
 
 		if (strcmp(op, "atomic_store") != 0)
-			emit_op(result_type, result_id, exp, false);
+		{
+			// For robustImageAccess2 or robustBufferAccess2, we've already declared the temporary
+			// with emit_uninitialized_temporary_expression so just assign to it instead of declaring a new variable
+			if (robust_image_atomic || pending_robust_buffer_atomic_result_id == result_id)
+				statement(to_expression(result_id), " = ", exp, ";");
+			else
+				emit_op(result_type, result_id, exp, false);
+		}
 		else
 			statement(exp, ";");
+
+		// For robustImageAccess2, close bounds check scope and set OOB result to zero
+		if (robust_image_atomic)
+		{
+			end_scope();
+			if (strcmp(op, "atomic_store") != 0)
+			{
+				statement("else");
+				begin_scope();
+				statement(to_expression(result_id), " = {};");
+				end_scope();
+			}
+		}
 	}
 
 	flush_all_atomic_capable_variables();
@@ -13122,6 +13692,174 @@ string CompilerMSL::to_buffer_size_expression(uint32_t id)
 				c = '_';
 
 		return buffer_expr + buffer_size_name_suffix + array_expr;
+	}
+}
+
+// Generates a bounds check expression for robust image access.
+// Returns an expression that is true if coordinates are within bounds.
+string CompilerMSL::get_robust_image_bounds_check(uint32_t img_id, const string &coord_expr,
+                                                  const string &lod_expr, bool include_null_check)
+{
+	auto &type = expression_type(img_id);
+	auto &imgtype = type.image;
+	string img_expr = to_expression(img_id);
+
+	// Build bounds check for each dimension
+	SmallVector<string> checks;
+	string lod_param = lod_expr.empty() ? "" : lod_expr;
+
+	// For null texture support (nullDescriptor feature), check if the texture is null first.
+	// Metal's get_width() may return undefined values for null textures in argument buffers,
+	// so we must explicitly check for null textures using is_null_texture().
+	// This can be excluded when the caller handles null checks separately.
+	if (include_null_check)
+		checks.push_back(join("(!is_null_texture(", img_expr, "))"));
+
+	// For 1D non-arrayed images and buffer images, coordinate is scalar; otherwise it's a vector
+	bool coord_is_scalar = ((imgtype.dim == Dim1D || imgtype.dim == DimBuffer) && !imgtype.arrayed);
+
+	// Check x coordinate (always present)
+	string x_coord = coord_is_scalar ? coord_expr : (coord_expr + ".x");
+	checks.push_back(join("(uint(", x_coord, ") < ", img_expr, ".get_width(", lod_param, "))"));
+
+	// Check y coordinate for 2D, Cube, 3D
+	if (imgtype.dim == Dim2D || imgtype.dim == DimCube || imgtype.dim == Dim3D)
+		checks.push_back(join("(uint(", coord_expr, ".y) < ", img_expr, ".get_height(", lod_param, "))"));
+
+	// Check z coordinate for 3D
+	if (imgtype.dim == Dim3D)
+		checks.push_back(join("(uint(", coord_expr, ".z) < ", img_expr, ".get_depth(", lod_param, "))"));
+
+	// Check face index for non-arrayed cube images
+	if (imgtype.dim == DimCube && !imgtype.arrayed)
+		checks.push_back(join("(uint(", coord_expr, ".z) < 6)"));
+
+	// Check array layer for arrayed images
+	if (imgtype.arrayed)
+	{
+		string array_coord;
+		if (imgtype.dim == Dim1D)
+			array_coord = coord_expr + ".y";
+		else if (imgtype.dim == Dim2D)
+			array_coord = coord_expr + ".z";
+		else if (imgtype.dim == DimCube)
+		{
+			// For cube arrays, coord.z contains (face + layer * 6).
+			// Valid range: face in [0,5], layer in [0, array_layers-1]
+			// So coord.z should be in [0, 6 * array_layers).
+			// For emulated cube arrays: get_array_size() returns 6 * array_layers
+			// For non-emulated cube arrays: get_array_size() returns array_layers,
+			// but we still need to multiply by 6 for the combined check.
+			if (msl_options.emulate_cube_array)
+			{
+				// get_array_size() already returns the flattened count (6 * array_layers)
+				checks.push_back(join("(uint(", coord_expr, ".z) < ", img_expr, ".get_array_size())"));
+			}
+			else
+			{
+				// get_array_size() returns actual array layer count, need to multiply by 6
+				checks.push_back(join("(uint(", coord_expr, ".z) < 6u * ", img_expr, ".get_array_size())"));
+			}
+			array_coord = ""; // Handled above
+		}
+
+		if (!array_coord.empty())
+		{
+			string array_size = img_expr + ".get_array_size()";
+			checks.push_back(join("(uint(", array_coord, ") < ", array_size, ")"));
+		}
+	}
+
+	// Combine all checks with &&
+	string result = checks[0];
+	for (size_t i = 1; i < checks.size(); i++)
+		result = join("(", result, " && ", checks[i], ")");
+
+	return result;
+}
+
+// Generates a zero value expression for robust image access OOB reads.
+// Per Vulkan spec, OOB reads return zeros for existing components,
+// with (0,0,1) substituted for missing G, B, A components based on format.
+string CompilerMSL::get_robust_image_zero_value(const SPIRType &result_type, uint32_t format_components)
+{
+	string type_name = type_to_glsl(result_type);
+
+	// Per Vulkan spec (images-component-substitution):
+	// - Components that exist in the format return 0
+	// - Missing G, B components are substituted with 0
+	// - Missing A component is substituted with 1
+	//
+	// So for format with N components, result is:
+	// - N=4: (0, 0, 0, 0) - all components exist, all zero
+	// - N=3: (0, 0, 0, 1) - RGB exist (zero), A is substituted (1)
+	// - N=2: (0, 0, 0, 1) - RG exist (zero), B substituted (0), A substituted (1)
+	// - N=1: (0, 0, 0, 1) - R exists (zero), GBA substituted (0, 0, 1)
+
+	if (result_type.vecsize == 4)
+	{
+		// For 4-component result:
+		// - If format has 4 components, return (0,0,0,0) - all components exist, all zero
+		// - Otherwise, return (0,0,0,1) - alpha is missing, substitute 1
+		// When format is unknown (format_components == 0), default to (0,0,0,1)
+		// because most formats have fewer than 4 components.
+		if (format_components >= 4)
+			return join(type_name, "(0, 0, 0, 0)");  // All 4 components exist, all zero
+		else
+			return join(type_name, "(0, 0, 0, 1)");  // Alpha is missing or unknown, substitute 1
+	}
+	else if (result_type.vecsize == 3)
+	{
+		// 3-component result - no alpha
+		return join(type_name, "(0, 0, 0)");
+	}
+	else if (result_type.vecsize == 2)
+	{
+		// 2-component result - return zeros
+		return join(type_name, "(0, 0)");
+	}
+	else
+	{
+		// Scalar - return zero
+		return join(type_name, "(0)");
+	}
+}
+
+string CompilerMSL::get_robust_buffer_array_length(const SPIRType &type, uint32_t var_id)
+{
+	if (is_runtime_size_array(type))
+	{
+		string size_expr = to_buffer_size_expression(var_id);
+		uint32_t stride = get_decoration(type.self, DecorationArrayStride);
+		if (stride == 0 && type.parent_type)
+		{
+			auto &elem_type = get<SPIRType>(type.parent_type);
+			stride = (elem_type.width / 8) * elem_type.vecsize * elem_type.columns;
+		}
+		if (stride == 0)
+			stride = 4;
+		return join("(", size_expr, " / ", stride, "u)");
+	}
+	else
+	{
+		string declared_length = to_string(to_array_size_literal(type));
+		if (msl_options.robust_buffer_access2)
+		{
+			string size_expr = to_buffer_size_expression(var_id);
+			if (!size_expr.empty())
+			{
+				uint32_t stride = get_decoration(type.self, DecorationArrayStride);
+				if (stride == 0 && type.parent_type)
+				{
+					auto &elem_type = get<SPIRType>(type.parent_type);
+					stride = (elem_type.width / 8) * elem_type.vecsize * elem_type.columns;
+				}
+				if (stride == 0)
+					stride = 4;
+				return join("(", size_expr, " / ", stride, "u)");
+			}
+		}
+		return declared_length;
 	}
 }
 
@@ -15076,10 +15814,11 @@ void CompilerMSL::fix_up_shader_inputs_outputs()
 				});
 			}
 		}
-		else if ((var.storage == StorageClassStorageBuffer || (var.storage == StorageClassUniform && ssbo)) &&
+		else if ((var.storage == StorageClassStorageBuffer || var.storage == StorageClassPushConstant ||
+		          (var.storage == StorageClassUniform && (ssbo || buffer_requires_robust_access(var.self)))) &&
 		         !is_hidden_variable(var))
 		{
-			if (buffer_requires_array_length(var.self))
+			if (buffer_requires_array_length(var.self) || buffer_requires_robust_access(var.self))
 			{
 				entry_func.fixup_hooks_in.push_back(
 				    [this, &type, &var, var_id]()
@@ -15087,7 +15826,7 @@ void CompilerMSL::fix_up_shader_inputs_outputs()
 					    bool is_array_type = !type.array.empty() && !is_var_runtime_size_array(var);
 
 					    uint32_t desc_set = get_decoration(var_id, DecorationDescriptorSet);
-					    if (descriptor_set_is_argument_buffer(desc_set))
+					    if (var.storage != StorageClassPushConstant && descriptor_set_is_argument_buffer(desc_set))
 					    {
 						    statement("constant uint", is_array_type ? "* " : "& ", to_buffer_size_expression(var_id),
 						              is_array_type ? " = &" : " = ", to_name(argument_buffer_ids[desc_set]),
@@ -18694,6 +19433,28 @@ bool CompilerMSL::OpCodePreprocessor::handle(Op opcode, const uint32_t *args, ui
 		set<SPIRExpression>(id, "", result_type, true);
 		self.register_read(id, ptr, true);
 		self.ir.ids[id].set_allow_type_rewrite();
+
+		// For robust buffer access, track uniform/storage buffers that are accessed
+		// Also track buffers with Block/BufferBlock decoration regardless of storage class
+		if (self.msl_options.robust_buffer_access2)
+		{
+			auto *var = self.maybe_get_backing_variable(ptr);
+			if (var)
+			{
+				auto &var_type = self.get_variable_data_type(*var);
+				auto storage = var_type.storage;
+				bool is_buffer = storage == StorageClassUniform ||
+				                 storage == StorageClassStorageBuffer ||
+				                 self.has_decoration(var_type.self, DecorationBlock) ||
+				                 self.has_decoration(var_type.self, DecorationBufferBlock);
+				if (is_buffer)
+				{
+					self.buffers_requiring_robust_access.insert(var->self);
+					// Also add to buffers_requiring_array_length so buffer size is declared
+					self.buffers_requiring_array_length.insert(var->self);
+				}
+			}
+		}
 		break;
 	}
 
@@ -19858,10 +20619,21 @@ void CompilerMSL::analyze_argument_buffers()
 				else if (buffers_requiring_dynamic_offset.count(pair))
 				{
 					// Don't set the qualified name here; we'll define a variable holding the corrected buffer address later.
-					buffer_type.member_types.push_back(var.basetype);
 					auto &dynamic_buffer = buffers_requiring_dynamic_offset[pair];
-					dynamic_buffer.var_id = var.self;
-					dynamic_buffer.mbr_name = mbr_name;
+
+					// Check if this is an aliased variable (another variable already claimed this binding)
+					if (dynamic_buffer.var_id != 0)
+					{
+						// This is an aliased variable - track it for later emission as a cast
+						dynamic_buffer.aliased_vars.push_back(var.self);
+					}
+					else
+					{
+						// This is the primary variable for this binding
+						buffer_type.member_types.push_back(var.basetype);
+						dynamic_buffer.var_id = var.self;
+						dynamic_buffer.mbr_name = mbr_name;
+					}
 				}
 				else if (inline_uniform_blocks.count(pair))
 				{

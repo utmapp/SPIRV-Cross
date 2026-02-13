@@ -113,6 +113,10 @@ struct MSLResourceBinding
 	uint32_t msl_buffer = 0;
 	uint32_t msl_texture = 0;
 	uint32_t msl_sampler = 0;
+	// For storage images with Unknown format in SPIR-V, specifies the number of
+	// components in the image format (1-4). Used by robustImageAccess2 to determine
+	// correct OOB zero value. 0 means unknown/use SPIR-V format if available.
+	uint32_t image_format_components = 0;
 };
 
 enum MSLSamplerCoord
@@ -547,6 +551,15 @@ public:
 		// Requires MSL 3.2 or above, and has no effect with earlier MSL versions.
 		bool use_fast_math_pragmas = false;
 
+		// Enable robust buffer access bounds checking for VK_EXT_robustness2.
+		// OOB buffer reads return zero using clamp-then-select pattern.
+		bool robust_buffer_access2 = false;
+
+		// Enable robust image access bounds checking for VK_EXT_robustness2.
+		// OOB image reads return zero with (0,0,1) for missing G, B, A components.
+		// OOB image writes and atomics are discarded/return zero.
+		bool robust_image_access2 = false;
+
 		bool is_ios() const
 		{
 			return platform == iOS;
@@ -608,12 +621,17 @@ public:
 	// containing STORAGE_BUFFER buffer sizes to support OpArrayLength.
 	bool needs_buffer_size_buffer() const
 	{
-		return !buffers_requiring_array_length.empty();
+		return !buffers_requiring_array_length.empty() || !buffers_requiring_robust_access.empty();
 	}
 
 	bool buffer_requires_array_length(VariableID id) const
 	{
 		return buffers_requiring_array_length.count(id) != 0;
+	}
+
+	bool buffer_requires_robust_access(VariableID id) const
+	{
+		return buffers_requiring_robust_access.count(id) != 0;
 	}
 
 	// Provide feedback to calling API to allow it to pass a buffer
@@ -1074,6 +1092,14 @@ protected:
 	std::string to_sampler_expression(uint32_t id);
 	std::string to_swizzle_expression(uint32_t id);
 	std::string to_buffer_size_expression(uint32_t id);
+
+	// Robust image access helpers for robustImageAccess2
+	std::string get_robust_image_bounds_check(uint32_t img_id, const std::string &coord_expr,
+	                                          const std::string &lod_expr, bool include_null_check = true);
+	std::string get_robust_image_zero_value(const SPIRType &result_type, uint32_t format_components);
+	// Robust buffer access helpers for robustBufferAccess2
+	std::string get_robust_buffer_array_length(const SPIRType &type, uint32_t var_id);
+
 	bool is_sample_rate() const;
 	bool is_intersection_query() const;
 	bool is_direct_input_builtin(BuiltIn builtin);
@@ -1202,6 +1228,8 @@ protected:
 	                                            bool &is_packed) override;
 	void fix_up_interpolant_access_chain(const uint32_t *ops, uint32_t length);
 	bool check_physical_type_cast(std::string &expr, const SPIRType *type, uint32_t physical_type) override;
+	void access_chain_internal_append_index(std::string &expr, uint32_t base, const SPIRType *type,
+	                                        AccessChainFlags flags, bool &access_chain_is_arrayed, uint32_t index) override;
 
 	bool emit_tessellation_access_chain(const uint32_t *ops, uint32_t length);
 	bool emit_tessellation_io_load(uint32_t result_type, uint32_t id, uint32_t ptr);
@@ -1308,6 +1336,31 @@ protected:
 	const MSLConstexprSampler *find_constexpr_sampler(uint32_t id) const;
 
 	std::unordered_set<uint32_t> buffers_requiring_array_length;
+	std::unordered_set<VariableID> buffers_requiring_robust_access; // For robustBufferAccess2
+
+	// Track access chains that need robust zero-select wrapping at OpLoad
+	struct RobustAccessInfo
+	{
+		std::string bounds_check_condition;
+		bool valid = false;
+	};
+	std::unordered_map<uint32_t, RobustAccessInfo> robust_access_chains;
+
+	// Temporary storage for robust access info during access chain building
+	RobustAccessInfo pending_robust_access_info;
+
+	// Track image texel pointers for robust image atomic access
+	struct RobustImageAtomicInfo
+	{
+		uint32_t image_id = 0;
+		uint32_t coord_id = 0;
+	};
+	std::unordered_map<uint32_t, RobustImageAtomicInfo> robust_image_atomics;
+
+	// Track when we're in a robust buffer atomic context
+	// The result ID is set before calling emit_atomic_func_op to tell it to assign, not declare
+	uint32_t pending_robust_buffer_atomic_result_id = 0;
+
 	SmallVector<uint32_t> buffer_aliases_discrete;
 	std::unordered_set<uint32_t> atomic_image_vars_emulated; // Emulate texture2D atomic operations
 	std::unordered_set<uint32_t> pull_model_inputs;
@@ -1321,6 +1374,7 @@ protected:
 		uint32_t base_index;
 		uint32_t var_id;
 		std::string mbr_name;
+		SmallVector<uint32_t> aliased_vars; // Variables that alias this binding
 	};
 	std::map<SetBindingPair, DynamicBuffer> buffers_requiring_dynamic_offset;
 

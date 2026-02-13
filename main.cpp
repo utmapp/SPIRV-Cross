@@ -688,6 +688,8 @@ struct CLIArguments
 	bool msl_enable_point_size_default = false;
 	float msl_default_point_size = 1.0f;
 	const char *msl_combined_sampler_suffix = nullptr;
+	bool msl_robust_buffer_access2 = false;
+	bool msl_robust_image_access2 = false;
 	bool glsl_emit_push_constant_as_ubo = false;
 	bool glsl_emit_ubo_as_plain_uniforms = false;
 	bool glsl_force_flattened_io_blocks = false;
@@ -1277,6 +1279,8 @@ static string compile_iteration(const CLIArguments &args, std::vector<uint32_t> 
 		msl_opts.auto_disable_rasterization = args.msl_auto_disable_rasterization;
 		msl_opts.enable_point_size_default = args.msl_enable_point_size_default;
 		msl_opts.default_point_size = args.msl_default_point_size;
+		msl_opts.robust_buffer_access2 = args.msl_robust_buffer_access2;
+		msl_opts.robust_image_access2 = args.msl_robust_image_access2;
 		msl_comp->set_msl_options(msl_opts);
 		for (auto &v : args.msl_discrete_descriptor_sets)
 			msl_comp->add_discrete_descriptor_set(v);
@@ -1844,6 +1848,8 @@ static int main_inner(int argc, char *argv[])
 	cbs.add("--msl-input-attachment-is-ds-attachment", [&args](CLIParser &) { args.msl_input_attachment_is_ds_attachment = true; });
 	cbs.add("--msl-disable-rasterization", [&args](CLIParser &) { args.msl_disable_rasterization = true; });
 	cbs.add("--msl-auto-disable-rasterization", [&args](CLIParser &) { args.msl_auto_disable_rasterization = true; });
+	cbs.add("--msl-robust-buffer-access2", [&args](CLIParser &) { args.msl_robust_buffer_access2 = true; });
+	cbs.add("--msl-robust-image-access2", [&args](CLIParser &) { args.msl_robust_image_access2 = true; });
 	cbs.add("--msl-default-point-size", [&args](CLIParser &parser) {
 		args.msl_enable_point_size_default = true;
 		args.msl_default_point_size = static_cast<float>(parser.next_double());
