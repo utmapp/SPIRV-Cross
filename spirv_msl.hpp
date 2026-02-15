@@ -338,6 +338,7 @@ public:
 		uint32_t shader_patch_input_buffer_index = 20;
 		uint32_t draw_info_index = 20;
 		uint32_t xfb_buffer_index = 19;
+		uint32_t texture_offset_buffer_index = 18;
 		uint32_t shader_input_wg_index = 0;
 		uint32_t device_index = 0;
 		uint32_t enable_frag_output_mask = 0xffffffff;
@@ -353,6 +354,7 @@ public:
 		bool disable_rasterization = false;
 		bool capture_output_to_buffer = false;
 		bool swizzle_texture_samples = false;
+		bool add_texture_buffer_offsets = false;
 		bool tess_domain_origin_lower_left = false;
 		bool multiview = false;
 		bool multiview_layered_rendering = true;
@@ -651,6 +653,11 @@ public:
 	bool needs_buffer_size_buffer() const
 	{
 		return !buffers_requiring_array_length.empty() || !buffers_requiring_robust_access.empty();
+	}
+
+	bool needs_texture_offset_buffer() const
+	{
+		return msl_options.add_texture_buffer_offsets && used_texture_buffer;
 	}
 
 	bool buffer_requires_array_length(VariableID id) const
@@ -1142,6 +1149,7 @@ protected:
 	std::string ensure_valid_name(std::string name, std::string pfx);
 	std::string to_sampler_expression(uint32_t id);
 	std::string to_swizzle_expression(uint32_t id);
+	std::string to_texture_offset_expression(uint32_t id);
 	std::string to_buffer_size_expression(uint32_t id);
 
 	// Robust image access helpers for robustImageAccess2
@@ -1258,6 +1266,7 @@ protected:
 	uint32_t builtin_frag_depth_id = 0;
 	uint32_t swizzle_buffer_id = 0;
 	uint32_t buffer_size_buffer_id = 0;
+	uint32_t texture_offset_buffer_id = 0;
 	uint32_t view_mask_buffer_id = 0;
 	uint32_t dynamic_offsets_buffer_id = 0;
 	uint32_t xfb_buffer_id = 0;
@@ -1278,6 +1287,7 @@ protected:
 
 	void analyze_sampled_image_usage();
 	void analyze_workgroup_variables();
+	void analyze_texture_buffer_usage();
 
 	bool access_chain_needs_stage_io_builtin_translation(uint32_t base) override;
 	bool prepare_access_chain_for_scalar_access(std::string &expr, const SPIRType &type, StorageClass storage,
@@ -1360,6 +1370,7 @@ protected:
 	bool capture_output_to_buffer = false;
 	bool needs_swizzle_buffer_def = false;
 	bool used_swizzle_buffer = false;
+	bool used_texture_buffer = false;
 	bool added_builtin_tess_level = false;
 	bool needs_local_invocation_index = false;
 	bool needs_subgroup_invocation_id = false;
@@ -1380,6 +1391,7 @@ protected:
 	std::string sampler_name_suffix = "Smplr";
 	std::string swizzle_name_suffix = "Swzl";
 	std::string buffer_size_name_suffix = "BufferSize";
+	std::string texture_offset_name_suffix = "TextureOffset";
 	std::string plane_name_suffix = "Plane";
 	std::string input_wg_var_name = "gl_in";
 	std::string input_buffer_var_name = "spvIn";
