@@ -1296,6 +1296,7 @@ void CompilerMSL::build_implicit_builtins()
 		uint32_t var_id = offset + 2;
 
 		SPIRType ubyte_type_pointer = get_ubyte_type();
+		ubyte_type_pointer.op = OpTypePointer;
 		ubyte_type_pointer.pointer = true;
 		ubyte_type_pointer.pointer_depth++;
 		ubyte_type_pointer.parent_type = get_ubyte_type_id();
@@ -1484,7 +1485,7 @@ uint32_t CompilerMSL::get_ubyte_type_id()
 
 	SPIRType type { OpTypeInt };
 	type.basetype = SPIRType::UByte;
-	type.width = 8;
+	type.width = 32;
 	set<SPIRType>(ubyte_type_id, type);
 	return ubyte_type_id;
 }
@@ -1911,6 +1912,7 @@ void CompilerMSL::emit_mesh_wrapper()
 		statement("int32_t indexed;");
 		statement("int32_t indexSize;");
 		statement("int64_t indexBuffer;");
+		statement("uint8_t topoStrip;");
 
 		end_scope(";");
 
@@ -1932,13 +1934,17 @@ void CompilerMSL::emit_mesh_wrapper()
 		}
 
 		// Disable for_mesh_pipeline temporarily so that args get their [[attributes]].
-		msl_options.for_mesh_pipeline = false;
 		string object_arguments;
+		msl_options.for_mesh_pipeline = false;
+		if (msl_options.argument_buffers) {
+			object_arguments = entry_point_args_argument_buffer(false, true);
+		}
 		entry_point_args_discrete_descriptors(object_arguments);
+		if (!object_arguments.empty()) object_arguments += ",";
+
+		statement(object_arguments);
 		msl_options.for_mesh_pipeline = true;
 
-		if (!object_arguments.empty()) object_arguments += ",";
-		statement(object_arguments);
 
 		statement("uint3 positionInGrid [[thread_position_in_grid]])");
 
@@ -1951,12 +1957,14 @@ void CompilerMSL::emit_mesh_wrapper()
 		}
 		else if (msl_options.input_primitive_type == Options::PrimitiveTopology::Triangles)
 		{
-			statement("int startingIndex = positionInGrid.x * 3;");
+			statement("int startingIndex = positionInGrid.x;");
+			statement("if (drawInfo->topoStrip) startingIndex *= 3;");
 			statement("int vertexCount = 3;");
 		}
 		else if (msl_options.input_primitive_type == Options::PrimitiveTopology::Lines)
 		{
-			statement("int startingIndex = positionInGrid.x * 2;");
+			statement("int startingIndex = positionInGrid.x;");
+			statement("if (drawInfo->topoStrip) startingIndex *= 2;");
 			statement("int vertexCount = 2;");
 		}
 		else if (msl_options.input_primitive_type == Options::PrimitiveTopology::LineStrip)
@@ -2327,10 +2335,10 @@ string CompilerMSL::compile()
 		add_active_interface_variable(builtin_dispatch_base_id);
 	if (builtin_sample_mask_id)
 		add_active_interface_variable(builtin_sample_mask_id);
-	if (builtin_frag_depth_id)
-		add_active_interface_variable(builtin_frag_depth_id);
 	if (xfb_buffer_id)
 		add_active_interface_variable(xfb_buffer_id);
+	if (builtin_frag_depth_id)
+		add_active_interface_variable(builtin_frag_depth_id);
 
 	// Create structs to hold input, output and uniform variables.
 	// Do output first to ensure out. is declared at top of entry function.
@@ -4908,9 +4916,8 @@ uint32_t CompilerMSL::add_interface_block(StorageClass storage, bool patch, bool
 				uint32_t component = get_decoration(var_id, DecorationComponent);
 				if (component != 0)
 				{
-					if (is_tessellation_shader())
-						SPIRV_CROSS_THROW("Component decoration is not supported in tessellation shaders.");
-					else if (pack_components)
+					// HACK 20542: Allow component decorations through in tessellation shaders and pray things magically work
+					if (pack_components)
 					{
 						uint32_t array_size = 1;
 						if (!type.array.empty())
@@ -11438,6 +11445,20 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		break;
 	}
 
+	case OpEmitVertex:
+	{
+		add_spv_func_and_recompile(SPVFuncImplEmitVertex);
+		statement("meshStream.EmitVertex();");
+		break;
+	}
+
+	case OpEndPrimitive:
+	{
+		add_spv_func_and_recompile(SPVFuncImplEmitVertex);
+		statement("meshStream.EndPrimitive();");
+		break;
+	}
+
 	case OpSDot:
 	case OpUDot:
 	case OpSUDot:
@@ -11590,20 +11611,6 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		emit_op(result_type, ret, exp, should_forward(value), should_forward(exp_value));
 		inherit_expression_dependencies(ret, value);
 		inherit_expression_dependencies(ret, exp_value);
-		break;
-	}
-
-	case OpEmitVertex:
-	{
-		add_spv_func_and_recompile(SPVFuncImplEmitVertex);
-		statement("meshStream.EmitVertex();");
-		break;
-	}
-
-	case OpEndPrimitive:
-	{
-		add_spv_func_and_recompile(SPVFuncImplEmitVertex);
-		statement("meshStream.EndPrimitive();");
 		break;
 	}
 
@@ -16211,7 +16218,7 @@ SmallVector<CompilerMSL::Entry_Point_Resource> CompilerMSL::get_sorted_entry_poi
 						discrete_descriptor_alias = resource.var;
 						// Self-reference marks that we should declare the resource,
 						// and it's being used as an alias (so we can emit void* instead).
-						resource.descriptor_alias = resource.var;
+						resource.discrete_descriptor_alias = resource.var;
 						// Need to promote interlocked usage so that the primary declaration is correct.
 						if (add_names && interlocked_resources.count(var_id))
 							interlocked_resources.insert(resource.var->self);
@@ -16309,9 +16316,9 @@ void CompilerMSL::entry_point_args_discrete_descriptors(string &ep_args)
 				add_spv_func_and_recompile(SPVFuncImplVariableDescriptor);
 		}
 
-		if (r.descriptor_alias)
+		if (r.discrete_descriptor_alias)
 		{
-			if (r.var == r.descriptor_alias)
+			if (r.var == r.discrete_descriptor_alias)
 			{
 				auto primary_name = join("spvBufferAliasSet",
 				                         get_decoration(var_id, DecorationDescriptorSet),
@@ -17125,7 +17132,7 @@ void CompilerMSL::fix_up_shader_inputs_outputs()
 		{
 			entry_func.fixup_hooks_out.push_back([=]() {
 				SPIRType type = get<SPIRType>(var.basetype);
-				type.pointer = false; // Hack, I'm not sure why it's a pointer, but that's not what I want!
+				type = get<SPIRType>(type.parent_type);
 				string cast;
 				if (type.basetype != SPIRType::Boolean && (is_vector(type) || is_matrix(type))) {
 					cast = "(packed_" + type_to_glsl(type, 0) + ")";
@@ -18470,8 +18477,8 @@ string CompilerMSL::image_type_glsl(const SPIRType &type, uint32_t id, bool memb
 
 	bool do_the_hack = false;
 
-	// Bypass pointers because we need the real image struct
-	auto &img_type = get<SPIRType>(type.self).image;
+	auto &img_type = type.image;
+
 	if (is_depth_image(type, id))
 	{
 		switch (img_type.dim)

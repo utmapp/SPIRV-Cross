@@ -529,6 +529,15 @@ public:
 		// The bug has been reported to Apple, and will hopefully be fixed in future releases.
 		bool replace_recursive_inputs = false;
 
+		// Compile for use with a geometry shader. If set, vertex shaders will be compiled as [[object]]
+		// functions, and geometry shaders as [[mesh]].
+		bool for_mesh_pipeline = false;
+
+		enum class PrimitiveTopology
+		{
+			Triangles, TriangleStrip, Lines, LineStrip, Points
+		} input_primitive_type;
+
 		// If set, manual fixups of gradient vectors for cube texture lookups will be performed.
 		// All released Apple Silicon GPUs to date behave incorrectly when sampling a cube texture
 		// with explicit gradients. They will ignore one of the three partial derivatives based
@@ -572,15 +581,6 @@ public:
 		// OOB image reads return zero with (0,0,1) for missing G, B, A components.
 		// OOB image writes and atomics are discarded/return zero.
 		bool robust_image_access2 = false;
-
-		// Compile for use with a geometry shader. If set, vertex shaders will be compiled as [[object]]
-		// functions, and geometry shaders as [[mesh]].
-		bool for_mesh_pipeline = false;
-
-		enum class PrimitiveTopology
-		{
-			Triangles, TriangleStrip, Lines, LineStrip, Points
-		} input_primitive_type;
 
 		bool is_ios() const
 		{
@@ -1103,9 +1103,9 @@ protected:
 	void emit_specialization_constants_and_structs();
 	void emit_interface_block(uint32_t ib_var_id);
 	bool maybe_emit_array_assignment(uint32_t id_lhs, uint32_t id_rhs);
+	void emit_mesh_wrapper();
 	bool is_var_runtime_size_array(const SPIRVariable &var) const;
 	uint32_t get_resource_array_size(const SPIRType &type, uint32_t id) const;
-	void emit_mesh_wrapper();
 
 	void fix_up_shader_inputs_outputs();
 
@@ -1122,7 +1122,7 @@ protected:
 	struct Entry_Point_Resource
 	{
 		SPIRVariable *var;
-		SPIRVariable *descriptor_alias;
+		SPIRVariable *discrete_descriptor_alias;
 		std::string name;
 		SPIRType::BaseType basetype;
 		uint32_t index;
