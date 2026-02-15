@@ -297,9 +297,13 @@ static const uint32_t kBufferSizeBufferBinding = ~(2u);
 
 // Special constant used in a MSLResourceBinding binding
 // element to indicate the buffer binding used for the argument buffer itself.
+static const uint32_t kTextureOffsetBufferBinding = ~(3u);
+
+// Special constant used in a MSLResourceBinding binding
+// element to indicate the buffer binding used for the argument buffer itself.
 // This buffer binding should be kept as small as possible as all automatic bindings for buffers
 // will start at max(kArgumentBufferBinding) + 1.
-static const uint32_t kArgumentBufferBinding = ~(3u);
+static const uint32_t kArgumentBufferBinding = ~(4u);
 
 static const uint32_t kMaxArgumentBuffers = 8;
 
@@ -1117,7 +1121,7 @@ protected:
 	bool entry_point_requires_const_device_buffers() const;
 	std::string func_type_decl(SPIRType &type);
 	std::string entry_point_args_classic(bool append_comma);
-	std::string entry_point_args_argument_buffer(bool append_comma);
+	std::string entry_point_args_argument_buffer(bool append_comma, bool only_emit_argument_buffers = false);
 	std::string entry_point_arg_stage_in();
 	void entry_point_args_builtin(std::string &args);
 	void entry_point_args_discrete_descriptors(std::string &args);

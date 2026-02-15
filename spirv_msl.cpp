@@ -2113,6 +2113,19 @@ void CompilerMSL::emit_mesh_wrapper()
 			need_comma = true;
 		}
 
+
+		if (msl_options.argument_buffers)
+		{
+			for (uint32_t i = 0; i < kMaxArgumentBuffers; i++)
+			{
+				uint32_t id = argument_buffer_ids[i];
+				if (id == 0)
+					continue;
+
+				statement(need_comma ? ", " : "", to_name(id));
+				need_comma = true;
+			}
+		}
 		ir.for_each_typed_id<SPIRVariable>([&](uint32_t var_id, SPIRVariable &var)
 		{
 			if (var.storage == StorageClassInput && is_builtin_variable(var))
@@ -2191,13 +2204,17 @@ void CompilerMSL::emit_mesh_wrapper()
 
 		// Geometry bindings
 
-		msl_options.for_mesh_pipeline = false;
-
 		string mesh_arguments;
+		msl_options.for_mesh_pipeline = false;
+		if (msl_options.argument_buffers) {
+			mesh_arguments = entry_point_args_argument_buffer(false, true);
+		}
+
 		entry_point_args_discrete_descriptors(mesh_arguments);
-		msl_options.for_mesh_pipeline = true;
 		if (!mesh_arguments.empty()) mesh_arguments += ",";
+
 		statement(mesh_arguments);
+		msl_options.for_mesh_pipeline = true;
 
 		statement("uint lid [[thread_index_in_threadgroup]], uint tid [[threadgroup_position_in_grid]])");
 
@@ -2237,6 +2254,19 @@ void CompilerMSL::emit_mesh_wrapper()
 
 		for (auto &resource : resources)
 			statement(", ", resource.name);
+
+
+		if (msl_options.argument_buffers)
+		{
+			for (uint32_t i = 0; i < kMaxArgumentBuffers; i++)
+			{
+				uint32_t id = argument_buffer_ids[i];
+				if (id == 0)
+					continue;
+
+				statement(", ", to_name(id));
+			}
+		}
 
 		statement(");");
 		end_scope();
@@ -16140,10 +16170,13 @@ void CompilerMSL::entry_point_args_builtin(string &ep_args)
 	}
 }
 
-string CompilerMSL::entry_point_args_argument_buffer(bool append_comma)
+string CompilerMSL::entry_point_args_argument_buffer(bool append_comma, bool only_emit_argument_buffers)
 {
-	string ep_args = entry_point_arg_stage_in();
+	string ep_args = "";
 	Bitset claimed_bindings;
+
+	if (!only_emit_argument_buffers)
+		ep_args = entry_point_arg_stage_in();
 
 	for (uint32_t i = 0; i < kMaxArgumentBuffers; i++)
 	{
@@ -16151,7 +16184,7 @@ string CompilerMSL::entry_point_args_argument_buffer(bool append_comma)
 		if (id == 0)
 			continue;
 
-		add_resource_name(id);
+		if (!only_emit_argument_buffers) add_resource_name(id);
 		auto &var = get<SPIRVariable>(id);
 		auto &type = get_variable_data_type(var);
 
@@ -16191,8 +16224,11 @@ string CompilerMSL::entry_point_args_argument_buffer(bool append_comma)
 		next_metal_resource_index_buffer = max(next_metal_resource_index_buffer, buffer_binding + 1);
 	}
 
-	entry_point_args_discrete_descriptors(ep_args);
-	entry_point_args_builtin(ep_args);
+	if (!only_emit_argument_buffers)
+	{
+		entry_point_args_discrete_descriptors(ep_args);
+		entry_point_args_builtin(ep_args);
+	}
 
 	if (!ep_args.empty() && append_comma)
 		ep_args += ", ";
