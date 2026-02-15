@@ -1320,6 +1320,32 @@ void CompilerMSL::build_implicit_builtins()
 		xfb_buffer_id = var_id;
 		printf("xfb_buffer_id = %u\n", var_id);
 	}
+
+	if (needs_msl_subgroup_size)
+	{
+		if (builtin_subgroup_size_id && !msl_options.emulate_subgroups && msl_options.fixed_subgroup_size == 0)
+		{
+			msl_subgroup_size_id = builtin_subgroup_size_id;
+		}
+		else
+		{
+			uint32_t offset = ir.increase_bound_by(2);
+			uint32_t type_ptr_id = offset;
+			uint32_t var_id = offset + 1;
+
+			SPIRType uint_type_ptr = get_uint_type();
+			uint_type_ptr.pointer = true;
+			uint_type_ptr.pointer_depth++;
+			uint_type_ptr.parent_type = get_uint_type_id();
+			uint_type_ptr.storage = StorageClassInput;
+			auto &ptr_type = set<SPIRType>(type_ptr_id, uint_type_ptr);
+			ptr_type.self = get_uint_type_id();
+
+			set<SPIRVariable>(var_id, type_ptr_id, StorageClassInput);
+			msl_subgroup_size_id = var_id;
+			ir.meta[var_id].decoration.alias = "spvNativeSubgroupSize";
+		}
+	}
 }
 
 // Checks if the specified builtin variable (e.g. gl_InstanceIndex) is marked as active.
@@ -2513,6 +2539,8 @@ void CompilerMSL::preprocess_op_codes()
 		needs_subgroup_invocation_id = true;
 	if (preproc.needs_subgroup_size)
 		needs_subgroup_size = true;
+	if (preproc.needs_msl_subgroup_size)
+		needs_msl_subgroup_size = true;
 	// build_implicit_builtins() hasn't run yet, and in fact, this needs to execute
 	// before then so that gl_SampleID will get added; so we also need to check if
 	// that function would add gl_FragCoord.
@@ -13066,6 +13094,14 @@ void CompilerMSL::emit_function_prototype(SPIRFunction &func, const Bitset &)
 			decl += entry_point_args_argument_buffer(!func.arguments.empty());
 		else
 			decl += entry_point_args_classic(!func.arguments.empty());
+
+		if (msl_subgroup_size_id && msl_subgroup_size_id != builtin_subgroup_size_id)
+		{
+			if (*decl.end() != '(')
+				decl += ", ";
+			decl += "uint spvNativeSubgroupSize [[";
+			decl += msl_options.supports_msl_version(2, 2) ? "threads_per_simdgroup]]" : "thread_execution_width]]";
+		}
 
 		// append entry point args to avoid conflicts in local variable names.
 		local_variable_names.insert(resource_names.begin(), resource_names.end());

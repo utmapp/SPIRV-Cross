@@ -1250,6 +1250,7 @@ protected:
 	uint32_t builtin_mesh_primitive_indices_id = 0;
 	uint32_t builtin_mesh_sizes_id = 0;
 	uint32_t builtin_task_grid_id = 0;
+	uint32_t msl_subgroup_size_id = 0;
 	uint32_t builtin_frag_depth_id = 0;
 	uint32_t swizzle_buffer_id = 0;
 	uint32_t buffer_size_buffer_id = 0;
@@ -1359,6 +1360,7 @@ protected:
 	bool needs_local_invocation_index = false;
 	bool needs_subgroup_invocation_id = false;
 	bool needs_subgroup_size = false;
+	bool needs_msl_subgroup_size = false;
 	bool needs_sample_id = false;
 	bool needs_helper_invocation = false;
 	bool needs_workgroup_zero_init = false;
@@ -1505,6 +1507,7 @@ protected:
 		bool needs_local_invocation_index = false;
 		bool needs_subgroup_invocation_id = false;
 		bool needs_subgroup_size = false;
+		bool needs_msl_subgroup_size = false;
 		bool needs_sample_id = false;
 		bool needs_helper_invocation = false;
 	};
