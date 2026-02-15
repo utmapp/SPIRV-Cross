@@ -516,6 +516,9 @@ public:
 		// so it can be enabled only when the bug is present.
 		bool sample_dref_lod_array_as_grad = false;
 
+		// Apply a workaround to prevent uses of bitwise not from crashing the AMD backend compiler
+		bool bitwise_not_causes_ice = false;
+
 		// MSL doesn't guarantee coherence between writes and subsequent reads of read_write textures.
 		// This inserts fences before each read of a read_write texture to ensure coherency.
 		// If you're sure you never rely on this, you can set this to false for a possible performance improvement.

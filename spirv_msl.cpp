@@ -2224,6 +2224,11 @@ string CompilerMSL::compile()
 	if (execution.model == ExecutionModelGeometry)
 		msl_options.for_mesh_pipeline = true;
 
+	if ((execution.model == ExecutionModelFragment && !msl_options.supports_msl_version(2, 2)) ||
+	    (execution.model == ExecutionModelVertex && !msl_options.vertex_for_tessellation) ||
+	    execution.model == ExecutionModelTessellationEvaluation)
+		msl_options.bitwise_not_causes_ice = false; // Can't get subgroup size
+
 	replace_illegal_entry_point_names();
 	ir.fixup_reserved_names();
 
@@ -2944,6 +2949,11 @@ void CompilerMSL::extract_global_variables_from_function(uint32_t func_id, std::
 					added_arg_ids.insert(builtin_mesh_sizes_id);
 				break;
 			}
+
+			case OpNot:
+				if (msl_options.bitwise_not_causes_ice)
+					added_arg_ids.insert(msl_subgroup_size_id);
+				break;
 
 			default:
 				break;
@@ -10215,6 +10225,21 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		}
 		break;
 	}
+
+	case OpNot:
+		if (msl_options.bitwise_not_causes_ice && integer_width == 32)
+		{
+			// The AMD backend compiler crashes under some uses of bitwise not.
+			// (subgroupSize >> 8) is guaranteed to be zero, but the compiler doesn't realize that until after the crashy optimizations run, so we can or that with the result of the bitwise not to prevent crashes.
+			// (It seems to get completely optimized out in the end as well, so the worst it will do is prevent other optimizations from happening, which is nice.)
+			// (Note that we need the real MSL subgroup size, since a size we hardcode will get optimized out much earlier and not prevent crashes.)
+			emit_op(ops[0], ops[1], join("(spvNativeSubgroupSize >> 8) | ~", to_enclosed_unpacked_expression(ops[2])), should_forward(ops[2]));
+		}
+		else
+		{
+			CompilerGLSL::emit_instruction(instruction);
+		}
+		break;
 
 	// Comparisons
 	case OpIEqual:
@@ -20306,6 +20331,11 @@ bool CompilerMSL::OpCodePreprocessor::handle(Op opcode, const uint32_t *args, ui
 	case OpIsHelperInvocationEXT:
 		if (self.needs_manual_helper_invocation_updates())
 			needs_helper_invocation = true;
+		break;
+
+	case OpNot:
+		if (self.msl_options.bitwise_not_causes_ice)
+			needs_msl_subgroup_size = true;
 		break;
 
 	default:
