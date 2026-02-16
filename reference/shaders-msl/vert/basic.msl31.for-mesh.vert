@@ -38,6 +38,7 @@ struct DrawInfo
     int32_t indexed;
     int32_t indexSize;
     int64_t indexBuffer;
+    uint8_t topoStrip;
 };
 [[object]]  void main0(object_data Payload &payload [[payload]], mesh_grid_properties meshGridProperties, constant DrawInfo *drawInfo [[buffer(20)]],
 device uchar *vb29 [[buffer(29)]],
@@ -45,7 +46,8 @@ device uchar *vb30 [[buffer(30)]],
 constant UBO& _16 [[buffer(0)]],
 uint3 positionInGrid [[thread_position_in_grid]])
 {
-    int startingIndex = positionInGrid.x * 3;
+    int startingIndex = positionInGrid.x;
+    if (drawInfo->topoStrip) startingIndex *= 3;
     int vertexCount = 3;
     int instanceIndex = positionInGrid.y;
     for (int i = 0; i < vertexCount; ++i)
