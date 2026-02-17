@@ -2291,6 +2291,54 @@ string CompilerMSL::compile()
 	if (execution.model == ExecutionModelGeometry)
 		msl_options.for_mesh_pipeline = true;
 
+	if (msl_options.for_mesh_pipeline)
+	{
+		ir.for_each_typed_id<SPIRFunction>([&](uint32_t func_id, SPIRFunction &func) {
+			if (func.self == ir.default_entry_point) return;
+			for (auto &block_id : func.blocks)
+			{
+				auto &block = get<SPIRBlock>(block_id);
+				for (auto &inst : block.ops)
+				{
+					if (inst.op == OpEmitVertex || inst.op == OpEndPrimitive)
+					{
+						functions_needing_mesh_stream.insert(func_id);
+						break;
+					}
+				}
+				if (functions_needing_mesh_stream.count(func_id)) break;
+			}
+		});
+
+		bool changed = true;
+		while (changed)
+		{
+			changed = false;
+			ir.for_each_typed_id<SPIRFunction>([&](uint32_t func_id, SPIRFunction &func) {
+				if (func.self == ir.default_entry_point) return;
+				if (functions_needing_mesh_stream.count(func_id)) return;
+
+				for (auto &block_id : func.blocks)
+				{
+					auto &block = get<SPIRBlock>(block_id);
+					for (auto &inst : block.ops)
+					{
+						if (inst.op == OpFunctionCall)
+						{
+							if (functions_needing_mesh_stream.count(ir.spirv[inst.offset + 2]))
+							{
+								functions_needing_mesh_stream.insert(func_id);
+								changed = true;
+								break;
+							}
+						}
+					}
+					if (functions_needing_mesh_stream.count(func_id)) break;
+				}
+			});
+		}
+	}
+
 	if ((execution.model == ExecutionModelFragment && !msl_options.supports_msl_version(2, 2)) ||
 	    (execution.model == ExecutionModelVertex && !msl_options.vertex_for_tessellation) ||
 	    execution.model == ExecutionModelTessellationEvaluation)
@@ -11067,6 +11115,123 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		break;
 	}
 
+	case OpFunctionCall:
+	{
+		uint32_t func_id = ops[2];
+		if (msl_options.for_mesh_pipeline && functions_needing_mesh_stream.count(func_id))
+		{
+			uint32_t result_type = ops[0];
+			uint32_t id = ops[1];
+			const auto *arg = &ops[3];
+			uint32_t length = instruction.length - 3;
+
+			auto &callee = get<SPIRFunction>(func_id);
+			auto &return_type = get<SPIRType>(callee.return_type);
+			bool pure = function_is_pure(callee);
+
+			bool emit_return_value_as_argument = false;
+
+			for (uint32_t i = 0; i < length; i++)
+			{
+				if (callee.arguments[i].write_count)
+				{
+					register_call_out_argument(arg[i]);
+				}
+
+				flush_variable_declaration(arg[i]);
+			}
+
+			if (!return_type.array.empty() && !backend.can_return_array)
+			{
+				emit_return_value_as_argument = true;
+			}
+
+			if (!pure)
+				register_impure_function_call();
+
+			string funexpr;
+			SmallVector<string> arglist;
+			funexpr += to_name(func_id) + "(";
+
+			if (emit_return_value_as_argument)
+			{
+				statement(type_to_glsl(return_type), " ", to_name(id), type_to_array_glsl(return_type, 0), ";");
+				arglist.push_back(to_name(id));
+			}
+
+			arglist.push_back("meshStream");
+
+			for (uint32_t i = 0; i < length; i++)
+			{
+				if (skip_argument(arg[i]))
+					continue;
+
+				arglist.push_back(to_func_call_arg(callee.arguments[i], arg[i]));
+			}
+
+			begin_scope();
+			for (uint32_t i = length; i < callee.arguments.size(); i++)
+			{
+				uint32_t arg_id = callee.arguments[i].id;
+				// implicit arguments usually alias variables.
+				// If it's not a variable, just pass it (it might be an expression, although rare for implicit args).
+				if (ir.ids[arg_id].get_type() == TypeVariable)
+				{
+					auto &var = get<SPIRVariable>(arg_id);
+					string name = to_name(arg_id);
+					string arg_str = to_func_call_arg(callee.arguments[i], arg_id);
+					auto space = arg_str.find_last_of(' ');
+					if (space != string::npos)
+					{
+						string last_part = arg_str.substr(space + 1);
+						if (last_part == name || (name.find('.') != string::npos && last_part == name.substr(name.find_last_of('.') + 1)))
+							arg_str = last_part;
+					}
+
+					if (name.find('.') == string::npos && arg_str == name)
+					{
+						bool old_deferred = var.deferred_declaration;
+						var.deferred_declaration = false;
+						statement(CompilerGLSL::variable_decl(var), ";");
+						var.deferred_declaration = old_deferred;
+					}
+					arglist.push_back(arg_str);
+				}
+				else
+				{
+					arglist.push_back(to_func_call_arg(callee.arguments[i], arg_id));
+				}
+			}
+
+			for (auto &combined : callee.combined_parameters)
+			{
+				uint32_t image_id = combined.global_image ? combined.global_image : arg[combined.image_id];
+				uint32_t sampler_id = combined.global_sampler ? combined.global_sampler : arg[combined.sampler_id];
+				arglist.push_back(to_combined_image_sampler(image_id, sampler_id));
+			}
+
+			funexpr += merge(arglist);
+			funexpr += ")";
+
+			if (result_type != 0 && get<SPIRType>(result_type).basetype != SPIRType::Void)
+			{
+				// Propagate precision into the function call
+				if (has_decoration(id, DecorationRelaxedPrecision))
+					set_decoration(func_id, DecorationRelaxedPrecision);
+				if (has_decoration(id, DecorationNoContraction))
+					set_decoration(func_id, DecorationNoContraction); // Not actually used by GLSL, but good for tracking.
+
+				emit_op(result_type, id, funexpr, should_forward(func_id));
+			}
+			else
+				statement(funexpr, ";");
+			end_scope();
+		}
+		else
+			CompilerGLSL::emit_instruction(instruction);
+		break;
+	}
+
 	case OpInBoundsAccessChain:
 	case OpAccessChain:
 	case OpPtrAccessChain:
@@ -13125,6 +13290,7 @@ void CompilerMSL::emit_function_prototype(SPIRFunction &func, const Bitset &)
 	decl += to_name(func.self);
 	decl += "(";
 
+	bool added_arg = false;
 	if (!type.array.empty() && msl_options.force_native_arrays)
 	{
 		// Fake arrays returns by writing to an out array instead.
@@ -13132,8 +13298,7 @@ void CompilerMSL::emit_function_prototype(SPIRFunction &func, const Bitset &)
 		decl += type_to_glsl(type);
 		decl += " (&spvReturnValue)";
 		decl += type_to_array_glsl(type, 0);
-		if (!func.arguments.empty())
-			decl += ", ";
+		added_arg = true;
 	}
 
 	if (processing_entry_point)
@@ -13193,6 +13358,20 @@ void CompilerMSL::emit_function_prototype(SPIRFunction &func, const Bitset &)
 			decl += join(", ", argument_decl(arg), " [[payload]]");
 		}
 	}
+
+	if (!processing_entry_point)
+	{
+		if (msl_options.for_mesh_pipeline && functions_needing_mesh_stream.count(func.self))
+		{
+			if (added_arg)
+				decl += ", ";
+			decl += "thread mesh_stream_t &meshStream";
+			added_arg = true;
+		}
+	}
+
+	if (!func.arguments.empty() && added_arg)
+		decl += ", ";
 
 	for (auto &arg : func.arguments)
 	{
