@@ -1458,8 +1458,8 @@ protected:
 	uint32_t argument_buffer_discrete_mask = 0;
 	uint32_t argument_buffer_device_storage_mask = 0;
 
-	void emit_argument_buffer_aliased_descriptor(const SPIRVariable &aliased_var,
-	                                             const SPIRVariable &base_var);
+	void emit_argument_buffer_aliased_descriptor(const SPIRVariable &aliased_var, const SPIRVariable &base_var,
+		                                         bool is_sampler = false);
 
 	void analyze_argument_buffers();
 	bool descriptor_set_is_argument_buffer(uint32_t desc_set) const;

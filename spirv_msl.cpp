@@ -21134,7 +21134,8 @@ bool CompilerMSL::is_supported_argument_buffer_type(const SPIRType &type) const
 }
 
 void CompilerMSL::emit_argument_buffer_aliased_descriptor(const SPIRVariable &aliased_var,
-                                                          const SPIRVariable &base_var)
+                                                          const SPIRVariable &base_var,
+                                                          bool is_sampler)
 {
 	// To deal with buffer <-> image aliasing, we need to perform an unholy UB ritual.
 	// A texture type in Metal 3.0 is a pointer. However, we cannot simply cast a pointer to texture.
@@ -21157,6 +21158,9 @@ void CompilerMSL::emit_argument_buffer_aliased_descriptor(const SPIRVariable &al
 		unqualified_name.pop_back();
 	}
 
+	if (is_sampler)
+		unqualified_name += sampler_name_suffix;
+
 	string name;
 
 	auto &var_type = get<SPIRType>(aliased_var.basetype);
@@ -21165,17 +21169,19 @@ void CompilerMSL::emit_argument_buffer_aliased_descriptor(const SPIRVariable &al
 
 	if (aliased_var.storage == StorageClassUniformConstant)
 	{
+		string type_name = is_sampler ? "sampler" : type_to_glsl(get_variable_data_type(aliased_var), aliased_var.self, true);
+
 		if (is_var_runtime_size_array(aliased_var))
 		{
 			// This becomes a plain pointer to spvDescriptor.
 			name = join("reinterpret_cast<", descriptor_storage, " ",
-			            type_to_glsl(get_variable_data_type(aliased_var), aliased_var.self, true), ">(&",
+			            type_name, ">(&",
 			            unqualified_name, ")");
 		}
 		else
 		{
 			name = join("reinterpret_cast<", descriptor_storage, " ",
-			            type_to_glsl(get_variable_data_type(aliased_var), aliased_var.self, true), " &>(",
+			            type_name, " &>(",
 			            unqualified_name, ");");
 		}
 	}
@@ -21217,9 +21223,16 @@ void CompilerMSL::emit_argument_buffer_aliased_descriptor(const SPIRVariable &al
 
 	if (!is_var_runtime_size_array(aliased_var))
 	{
-		// Lower to temporary, so drop the qualification.
-		set_qualified_name(aliased_var.self, "");
-		statement(descriptor_storage, " auto &", to_name(aliased_var.self), " = ", name);
+		if (is_sampler)
+		{
+			statement(descriptor_storage, " auto &", to_sampler_expression(aliased_var.self), " = ", name);
+		}
+		else
+		{
+			// Lower to temporary, so drop the qualification.
+			set_qualified_name(aliased_var.self, "");
+			statement(descriptor_storage, " auto &", to_name(aliased_var.self), " = ", name);
+		}
 	}
 	else
 	{
@@ -21590,6 +21603,17 @@ void CompilerMSL::analyze_argument_buffers()
 				}
 				else
 					buffer_type.member_types.push_back(sampler_type_id);
+
+				if (has_extended_decoration(var.self, SPIRVCrossDecorationOverlappingBinding))
+				{
+					if (!msl_options.supports_msl_version(3, 0))
+						SPIRV_CROSS_THROW("Full mutable aliasing of argument buffer descriptors only works on Metal 3+.");
+
+					auto &entry_func = get<SPIRFunction>(ir.default_entry_point);
+					entry_func.fixup_hooks_in.push_back([this, resource]() {
+						emit_argument_buffer_aliased_descriptor(*resource.var, this->get<SPIRVariable>(resource.overlapping_var_id), true);
+					});
+				}
 			}
 			else
 			{
