@@ -2116,15 +2116,6 @@ void CompilerMSL::emit_mesh_wrapper()
 			statement(to_name(stage_in_var_id));
 		}
 
-		auto resources = get_sorted_entry_point_args(false);
-
-		for (auto &resource : resources)
-		{
-			statement(need_comma ? ", " : "", resource.name);
-			need_comma = true;
-		}
-
-
 		if (msl_options.argument_buffers)
 		{
 			for (uint32_t i = 0; i < kMaxArgumentBuffers; i++)
@@ -2136,6 +2127,14 @@ void CompilerMSL::emit_mesh_wrapper()
 				statement(need_comma ? ", " : "", to_name(id));
 				need_comma = true;
 			}
+		}
+
+		auto resources = get_sorted_entry_point_args(false);
+
+		for (auto &resource : resources)
+		{
+			statement(need_comma ? ", " : "", resource.name);
+			need_comma = true;
 		}
 		ir.for_each_typed_id<SPIRVariable>([&](uint32_t var_id, SPIRVariable &var)
 		{
@@ -2261,12 +2260,6 @@ void CompilerMSL::emit_mesh_wrapper()
 
 		statement(join(execution.name, "(outputMesh, ", to_name(stage_in_var_id)));
 
-		auto resources = get_sorted_entry_point_args(false);
-
-		for (auto &resource : resources)
-			statement(", ", resource.name);
-
-
 		if (msl_options.argument_buffers)
 		{
 			for (uint32_t i = 0; i < kMaxArgumentBuffers; i++)
@@ -2278,6 +2271,11 @@ void CompilerMSL::emit_mesh_wrapper()
 				statement(", ", to_name(id));
 			}
 		}
+
+		auto resources = get_sorted_entry_point_args(false);
+
+		for (auto &resource : resources)
+			statement(", ", resource.name);
 
 		statement(");");
 		end_scope();
