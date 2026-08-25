@@ -1,0 +1,31 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct Record
+{
+    uint a;
+    uint b;
+    uint c;
+    uint d;
+};
+
+struct WriteSSBO
+{
+    Record result;
+};
+
+struct ReadSSBO
+{
+    Record records[1];
+};
+
+constant uint3 gl_WorkGroupSize [[maybe_unused]] = uint3(1u);
+
+kernel void main0(constant uint* spvBufferSizeConstants [[buffer(25)]], device WriteSSBO& _10 [[buffer(0)]], device ReadSSBO& _16 [[buffer(1)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+{
+    constant uint& _10BufferSize = spvBufferSizeConstants[0];
+    constant uint& _16BufferSize = spvBufferSizeConstants[1];
+    _10.result = (uint(gl_GlobalInvocationID.x) < (_16BufferSize / 4u) ? _16.records[min(uint(gl_GlobalInvocationID.x), uint(max(int((_16BufferSize / 4u)) - 1, 0)))] : Record{});
+}

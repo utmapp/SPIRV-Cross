@@ -10336,12 +10336,14 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 			if (expr)
 			{
 				auto &loaded_type = get<SPIRType>(result_type);
-				// Generate a proper zero expression using type constructor
-				// to_zero_initialized_expression returns {} which doesn't work in ternary
-				string zero_expr = join(type_to_glsl(loaded_type), "(0)");
+				// MSL structs do not have a scalar constructor. Use typed aggregate
+				// initialization so the expression remains valid in a ternary.
+				string zero_expr = loaded_type.basetype == SPIRType::Struct ? join(type_to_glsl(loaded_type), "{}") :
+				                                                              join(type_to_glsl(loaded_type), "(0)");
 
 				// Wrap the expression with a select: (in_bounds) ? loaded_value : zero
-				expr->expression = join("(", info.bounds_check_condition, " ? ", expr->expression, " : ", zero_expr, ")");
+				expr->expression =
+				    join("(", info.bounds_check_condition, " ? ", expr->expression, " : ", zero_expr, ")");
 			}
 			// Remove from map to avoid double-processing
 			robust_access_chains.erase(it);
