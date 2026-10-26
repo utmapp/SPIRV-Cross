@@ -18048,6 +18048,10 @@ const std::unordered_set<std::string> &CompilerMSL::get_reserved_keyword_set()
 		"gradient3d",
 		"min_lod_clamp",
 		"assert",
+		// MSL type names: a variable with one of these names hides the type for the rest of the
+		// scope (e.g. 'texture2d<float> sampler' followed by 'sampler samplerSmplr').
+		"sampler",
+		"array",
 		"VARIABLE_TRACEPOINT",
 		"STATIC_DATA_TRACEPOINT",
 		"STATIC_DATA_TRACEPOINT_V",
