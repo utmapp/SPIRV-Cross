@@ -1,0 +1,33 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct Item
+{
+    uint a;
+    uint b;
+    uint c;
+    uint d;
+};
+
+struct ItemSSBO
+{
+    Item items[1];
+};
+
+struct OutputSSBO
+{
+    uint out_data[1];
+};
+
+kernel void main0(constant uint* spvBufferSizeConstants [[buffer(25)]], device ItemSSBO& _7 [[buffer(0)]], device OutputSSBO& _9 [[buffer(1)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+{
+    constant uint& _7BufferSize = spvBufferSizeConstants[0];
+    constant uint& _9BufferSize = spvBufferSizeConstants[1];
+    if (uint(gl_GlobalInvocationID.x) < (_9BufferSize / 4u))
+    {
+        _9.out_data[min(uint(gl_GlobalInvocationID.x), uint(max(int((_9BufferSize / 4u)) - 1, 0)))] = (uint(gl_GlobalInvocationID.x) < (_7BufferSize / 16u) ? _7.items[min(uint(gl_GlobalInvocationID.x), uint(max(int((_7BufferSize / 16u)) - 1, 0)))] : Item{}).a + (uint(gl_GlobalInvocationID.x) < (_7BufferSize / 16u) ? _7.items[min(uint(gl_GlobalInvocationID.x), uint(max(int((_7BufferSize / 16u)) - 1, 0)))] : Item{}).d;
+    }
+}
+
