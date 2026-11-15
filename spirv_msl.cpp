@@ -14863,20 +14863,44 @@ string CompilerMSL::get_robust_image_zero_value(const SPIRType &result_type, uin
 	}
 }
 
+uint32_t CompilerMSL::get_robust_buffer_array_stride(const SPIRType &type) const
+{
+	// ArrayStride decorates the array type's own ID, but type.self of an array
+	// resolves to its element type, so find the ID this type is stored under.
+	auto itr = robust_array_type_ids.find(&type);
+	if (itr == robust_array_type_ids.end())
+	{
+		uint32_t type_id = 0;
+		ir.for_each_typed_id<SPIRType>([&](uint32_t id, const SPIRType &candidate) {
+			if (&candidate == &type)
+				type_id = id;
+		});
+		itr = robust_array_type_ids.emplace(&type, type_id).first;
+	}
+
+	uint32_t stride = 0;
+	if (itr->second && has_decoration(itr->second, DecorationArrayStride))
+		stride = get_decoration(itr->second, DecorationArrayStride);
+	if (stride == 0 && type.parent_type)
+	{
+		auto &elem_type = get<SPIRType>(type.parent_type);
+		if (elem_type.basetype == SPIRType::Struct && elem_type.array.empty() && !elem_type.member_types.empty() &&
+		    has_member_decoration(elem_type.self, 0, DecorationOffset))
+			stride = uint32_t(get_declared_struct_size(elem_type));
+		else
+			stride = (elem_type.width / 8) * elem_type.vecsize * elem_type.columns;
+	}
+	if (stride == 0)
+		stride = 4;
+	return stride;
+}
+
 string CompilerMSL::get_robust_buffer_array_length(const SPIRType &type, uint32_t var_id)
 {
 	if (is_runtime_size_array(type))
 	{
 		string size_expr = to_buffer_size_expression(var_id);
-		uint32_t stride = get_decoration(type.self, DecorationArrayStride);
-		if (stride == 0 && type.parent_type)
-		{
-			auto &elem_type = get<SPIRType>(type.parent_type);
-			stride = (elem_type.width / 8) * elem_type.vecsize * elem_type.columns;
-		}
-		if (stride == 0)
-			stride = 4;
-		return join("(", size_expr, " / ", stride, "u)");
+		return join("(", size_expr, " / ", get_robust_buffer_array_stride(type), "u)");
 	}
 	else
 	{
@@ -14885,17 +14909,7 @@ string CompilerMSL::get_robust_buffer_array_length(const SPIRType &type, uint32_
 		{
 			string size_expr = to_buffer_size_expression(var_id);
 			if (!size_expr.empty())
-			{
-				uint32_t stride = get_decoration(type.self, DecorationArrayStride);
-				if (stride == 0 && type.parent_type)
-				{
-					auto &elem_type = get<SPIRType>(type.parent_type);
-					stride = (elem_type.width / 8) * elem_type.vecsize * elem_type.columns;
-				}
-				if (stride == 0)
-					stride = 4;
-				return join("(", size_expr, " / ", stride, "u)");
-			}
+				return join("(", size_expr, " / ", get_robust_buffer_array_stride(type), "u)");
 		}
 		return declared_length;
 	}

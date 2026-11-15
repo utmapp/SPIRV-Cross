@@ -1159,6 +1159,7 @@ protected:
 	std::string get_robust_image_zero_value(const SPIRType &result_type, uint32_t format_components);
 	// Robust buffer access helpers for robustBufferAccess2
 	std::string get_robust_buffer_array_length(const SPIRType &type, uint32_t var_id);
+	uint32_t get_robust_buffer_array_stride(const SPIRType &type) const;
 
 	bool is_sample_rate() const;
 	bool is_intersection_query() const;
@@ -1418,6 +1419,8 @@ protected:
 		bool valid = false;
 	};
 	std::unordered_map<uint32_t, RobustAccessInfo> robust_access_chains;
+	// IDs of array types, looked up by object for their ArrayStride.
+	mutable std::unordered_map<const SPIRType *, uint32_t> robust_array_type_ids;
 
 	// Temporary storage for robust access info during access chain building
 	RobustAccessInfo pending_robust_access_info;

@@ -27,7 +27,7 @@ kernel void main0(constant uint* spvBufferSizeConstants [[buffer(25)]], device I
     constant uint& _9BufferSize = spvBufferSizeConstants[1];
     if (uint(gl_GlobalInvocationID.x) < (_9BufferSize / 4u))
     {
-        _9.out_data[min(uint(gl_GlobalInvocationID.x), uint(max(int((_9BufferSize / 4u)) - 1, 0)))] = (uint(gl_GlobalInvocationID.x) < (_7BufferSize / 4u) ? _7.items[min(uint(gl_GlobalInvocationID.x), uint(max(int((_7BufferSize / 4u)) - 1, 0)))] : Item{}).a + (uint(gl_GlobalInvocationID.x) < (_7BufferSize / 4u) ? _7.items[min(uint(gl_GlobalInvocationID.x), uint(max(int((_7BufferSize / 4u)) - 1, 0)))] : Item{}).d;
+        _9.out_data[min(uint(gl_GlobalInvocationID.x), uint(max(int((_9BufferSize / 4u)) - 1, 0)))] = (uint(gl_GlobalInvocationID.x) < (_7BufferSize / 16u) ? _7.items[min(uint(gl_GlobalInvocationID.x), uint(max(int((_7BufferSize / 16u)) - 1, 0)))] : Item{}).a + (uint(gl_GlobalInvocationID.x) < (_7BufferSize / 16u) ? _7.items[min(uint(gl_GlobalInvocationID.x), uint(max(int((_7BufferSize / 16u)) - 1, 0)))] : Item{}).d;
     }
 }
 
