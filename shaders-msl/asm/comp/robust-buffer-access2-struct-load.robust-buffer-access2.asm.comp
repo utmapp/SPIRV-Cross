@@ -1,0 +1,72 @@
+; SPIR-V
+; Version: 1.0
+; Generator: Khronos SPIR-V Tools Assembler; 0
+; Bound: 41
+; Schema: 0
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gl_GlobalInvocationID
+               OpExecutionMode %main LocalSize 64 1 1
+               OpName %main "main"
+               OpName %Item "Item"
+               OpMemberName %Item 0 "a"
+               OpMemberName %Item 1 "b"
+               OpMemberName %Item 2 "c"
+               OpMemberName %Item 3 "d"
+               OpName %ItemSSBO "ItemSSBO"
+               OpMemberName %ItemSSBO 0 "items"
+               OpName %items_buf ""
+               OpName %OutputSSBO "OutputSSBO"
+               OpMemberName %OutputSSBO 0 "out_data"
+               OpName %out_buf ""
+               OpName %gl_GlobalInvocationID "gl_GlobalInvocationID"
+               OpMemberDecorate %Item 0 Offset 0
+               OpMemberDecorate %Item 1 Offset 4
+               OpMemberDecorate %Item 2 Offset 8
+               OpMemberDecorate %Item 3 Offset 12
+               OpDecorate %_runtimearr_Item ArrayStride 16
+               OpMemberDecorate %ItemSSBO 0 NonWritable
+               OpMemberDecorate %ItemSSBO 0 Offset 0
+               OpDecorate %ItemSSBO BufferBlock
+               OpDecorate %items_buf DescriptorSet 0
+               OpDecorate %items_buf Binding 0
+               OpDecorate %_runtimearr_uint ArrayStride 4
+               OpMemberDecorate %OutputSSBO 0 Offset 0
+               OpDecorate %OutputSSBO BufferBlock
+               OpDecorate %out_buf DescriptorSet 0
+               OpDecorate %out_buf Binding 1
+               OpDecorate %gl_GlobalInvocationID BuiltIn GlobalInvocationId
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+     %uint_0 = OpConstant %uint 0
+     %uint_3 = OpConstant %uint 3
+     %v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gl_GlobalInvocationID = OpVariable %_ptr_Input_v3uint Input
+       %Item = OpTypeStruct %uint %uint %uint %uint
+%_runtimearr_Item = OpTypeRuntimeArray %Item
+   %ItemSSBO = OpTypeStruct %_runtimearr_Item
+%_ptr_Uniform_ItemSSBO = OpTypePointer Uniform %ItemSSBO
+  %items_buf = OpVariable %_ptr_Uniform_ItemSSBO Uniform
+%_ptr_Uniform_Item = OpTypePointer Uniform %Item
+%_runtimearr_uint = OpTypeRuntimeArray %uint
+ %OutputSSBO = OpTypeStruct %_runtimearr_uint
+%_ptr_Uniform_OutputSSBO = OpTypePointer Uniform %OutputSSBO
+    %out_buf = OpVariable %_ptr_Uniform_OutputSSBO Uniform
+%_ptr_Uniform_uint = OpTypePointer Uniform %uint
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+         %10 = OpLoad %v3uint %gl_GlobalInvocationID
+        %idx = OpCompositeExtract %uint %10 0
+         %20 = OpAccessChain %_ptr_Uniform_Item %items_buf %int_0 %idx
+       %item = OpLoad %Item %20
+         %30 = OpCompositeExtract %uint %item 0
+         %31 = OpCompositeExtract %uint %item 3
+         %34 = OpIAdd %uint %30 %31
+         %40 = OpAccessChain %_ptr_Uniform_uint %out_buf %int_0 %idx
+               OpStore %40 %34
+               OpReturn
+               OpFunctionEnd

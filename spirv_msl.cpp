@@ -10368,9 +10368,11 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 			if (expr)
 			{
 				auto &loaded_type = get<SPIRType>(result_type);
-				// Generate a proper zero expression using type constructor
-				// to_zero_initialized_expression returns {} which doesn't work in ternary
-				string zero_expr = join(type_to_glsl(loaded_type), "(0)");
+				// Generate a proper zero expression using type constructor.
+				// A bare {} doesn't work in a ternary, and a struct has no
+				// constructor taking a scalar, so value-initialize it instead.
+				string zero_expr = join(type_to_glsl(loaded_type),
+				                        loaded_type.basetype == SPIRType::Struct ? "{}" : "(0)");
 
 				// Wrap the expression with a select: (in_bounds) ? loaded_value : zero
 				expr->expression = join("(", info.bounds_check_condition, " ? ", expr->expression, " : ", zero_expr, ")");
